@@ -1,4 +1,5 @@
 #include "main.h"
+#include "Altair_library_for_CubeIDE/altair.h"
 
 CAN_HandleTypeDef hcan1;
 CAN_HandleTypeDef hcan2;
@@ -20,6 +21,29 @@ static void MX_TIM3_Init(void);
 static void MX_USART2_Init(void);
 static void MX_USART3_Init(void);
 
+/* サーボ軸数（固定6軸） */
+#define SERVO_COUNT            6U
+/* サーボ目標角度を受信するCAN標準ID */
+#define CAN_SERVO_CMD_STD_ID   100U
+/* 通信途絶とみなすまでの無受信時間[ms] */
+#define CAN_RX_TIMEOUT_MS      200U
+/* サーボ最小パルス幅[us]（0deg相当） */
+#define SERVO_MIN_PULSE_US     500U
+/* サーボ最大パルス幅[us]（180deg相当） */
+#define SERVO_MAX_PULSE_US     2400U
+/* 受け付ける角度の上限[deg] */
+#define SERVO_MAX_DEGREE       180U
+
+/* 各サーボの目標角度（初期値は全軸90度） */
+static volatile uint8_t g_servo_target_deg[SERVO_COUNT] = {90U, 90U, 90U, 90U, 90U, 90U};
+/* 最後に有効なCANを受信した時刻[ms] */
+static volatile uint32_t g_last_can_rx_tick = 0U;
+
+static uint32_t Servo_AngleToPulseUs(uint8_t degree);
+static void Servo_ApplyTargets(void);
+static void Servo_StartPwmOutputs(void);
+static void Servo_ProcessCanCommand(void);
+
 int main(void)
 {
   HAL_Init();
@@ -32,11 +56,118 @@ int main(void)
   MX_TIM3_Init();
   MX_USART2_Init();
   MX_USART3_Init();
+
+  /* AltairライブラリのCAN初期化（フィルタ設定 + 受信割り込み開始） */
+  if (Can_Init(&hcan1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* 6ch PWM出力を開始し、初期角度を反映 */
+  Servo_StartPwmOutputs();
+  Servo_ApplyTargets();
+
   while (1)
   {
+    /* can_lib.c 側コールバックで受信されたフレームを処理 */
+    Servo_ProcessCanCommand();
 
+    /* 受信が一定時間ない場合は通信LEDを消灯（角度は保持） */
+    if ((HAL_GetTick() - g_last_can_rx_tick) > CAN_RX_TIMEOUT_MS)
+    {
+      HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+    }
+
+    /* ポーリング待ちは使わず、次の割り込みまで待機 */
+    __WFI();
   }
   
+}
+
+static uint32_t Servo_AngleToPulseUs(uint8_t degree)
+{
+  uint32_t clamped_degree;
+  uint32_t pulse_range;
+
+  /* 角度入力を0..180degに収める */
+  clamped_degree = (degree > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : degree;
+  pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
+
+  /* 0..180deg を 500..2400us に線形変換 */
+  return SERVO_MIN_PULSE_US + ((pulse_range * clamped_degree) / SERVO_MAX_DEGREE);
+}
+
+static void Servo_ApplyTargets(void)
+{
+  /* ピン割当: PA6/PA7/PA8/PA9/PB8/PB9 */
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[0]));
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[1]));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[2]));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[3]));
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[4]));
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[5]));
+}
+
+static void Servo_StartPwmOutputs(void)
+{
+  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+static void Servo_ProcessCanCommand(void)
+{
+  uint32_t i;
+
+  if (g_can1_rx_data.new_data_flag == 0U)
+  {
+    return;
+  }
+
+  g_can1_rx_data.new_data_flag = 0U;
+
+  /* 標準ID 100 / DLC>=6 のみ処理 */
+  if ((g_can1_rx_data.std_id != CAN_SERVO_CMD_STD_ID) || (g_can1_rx_data.dlc < SERVO_COUNT))
+  {
+    return;
+  }
+
+  /* 各軸角度を更新（過大値は180degへクリップ） */
+  for (i = 0; i < SERVO_COUNT; i++)
+  {
+    g_servo_target_deg[i] = (g_can1_rx_data.data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : g_can1_rx_data.data[i];
+  }
+
+  /* 受信直後にPWMへ反映し、通信LEDを点灯 */
+  Servo_ApplyTargets();
+  g_last_can_rx_tick = HAL_GetTick();
+  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 }
 
 /**
@@ -102,15 +233,15 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 16;
+  hcan1.Init.Prescaler = 3;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
-  hcan1.Init.SyncJumpWidth = CAN_SJW_1TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_1TQ;
-  hcan1.Init.TimeSeg2 = CAN_BS2_1TQ;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_4TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_11TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
-  hcan1.Init.AutoBusOff = DISABLE;
+  hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
-  hcan1.Init.AutoRetransmission = DISABLE;
+  hcan1.Init.AutoRetransmission = ENABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
@@ -180,9 +311,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
+  htim1.Init.Prescaler = 83;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 19999;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -248,9 +379,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 0;
+  htim2.Init.Prescaler = 83;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 4294967295;
+  htim2.Init.Period = 19999;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
@@ -301,9 +432,9 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
+  htim3.Init.Prescaler = 83;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
+  htim3.Init.Period = 19999;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
