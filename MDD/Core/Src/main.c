@@ -1,6 +1,77 @@
 #include "main.h"
 #include "Altair_library_for_CubeIDE/altair.h"
 
+/* ===== アプリケーション基本設定 ===== */
+/* モータ台数（Altair_MDD_V3は4モータ構成） */
+#define MOTOR_COUNT 4
+/* 制御演算周期（PID実行周期） */
+#define CONTROL_PERIOD_MS 1U
+/* ステータスCAN送信周期 */
+#define STATUS_PERIOD_MS 10U
+/* 起動時にパラメータ受信を待つ最大時間 */
+#define INIT_WAIT_TIMEOUT_MS 2000U
+/* CAN受信タイムアウト判定時間 */
+#define CAN_RX_TIMEOUT_MS 1000U
+
+/* ===== ROS2 -> MDD 受信ID ===== */
+#define CAN_ID_PARAM_M1 0x200U
+#define CAN_ID_PARAM_M2 0x201U
+#define CAN_ID_PARAM_M3 0x203U
+#define CAN_ID_PARAM_M4 0x204U
+#define CAN_ID_TARGET 0x210U
+#define CAN_ID_MODE 0x211U
+
+/* ===== MDD -> ROS2 送信ID ===== */
+#define CAN_ID_STATUS_12 0x120U
+#define CAN_ID_STATUS_34 0x121U
+
+/* ===== エラーコード（ビットフラグ） ===== */
+#define ERR_NONE 0x00U
+#define ERR_INIT_TIMEOUT 0x01U
+#define ERR_CAN_RX_TIMEOUT 0x02U
+#define ERR_CAN_TX_FAIL 0x04U
+
+/* ===== デフォルト制御パラメータ ===== */
+#define DEFAULT_P_GAIN 0.80
+#define DEFAULT_I_GAIN 0.00
+#define DEFAULT_D_GAIN 0.02
+/* encoderライブラリでは直径をmmで扱う */
+#define DEFAULT_WHEEL_DIAMETER_MM 65.0
+#define DEFAULT_ENCODER_PPR 2048
+
+/* システム全体の状態遷移 */
+typedef enum {
+  APP_MODE_PARAMETER = 0,
+  APP_MODE_CONTROL = 1
+} AppMode;
+
+/* モータごとの制御モード */
+typedef enum {
+  CONTROL_SPEED = 0,
+  CONTROL_ANGLE = 1
+} ControlMode;
+
+/*
+ * 1モータ分の制御データをまとめた構造体
+ * - motor: PWM出力操作
+ * - encoder/encoder_data: 現在値推定
+ * - pid: 制御器状態
+ * - target_*: 目標値（モードで使い分け）
+ */
+typedef struct {
+  MotorDriver motor;
+  Encoder encoder;
+  EncoderData encoder_data;
+  Pid pid;
+  int32_t total_count;
+  int16_t target_raw;
+  double target_speed_rps;
+  double target_angle_deg;
+  double wheel_diameter_mm;
+  ControlMode mode;
+  uint8_t param_received;
+} MotorControl;
+
 CAN_HandleTypeDef hcan1;
 CAN_HandleTypeDef hcan2;
 
@@ -35,6 +106,385 @@ static void MX_TIM14_Init(void);
 static void MX_USART2_Init(void);
 static void MX_USART3_Init(void);
 
+/*
+ * グローバル状態
+ * - g_app_mode: パラメータ待機中か制御実行中か
+ * - g_error_code: 異常状態（ビットフラグ）
+ * - g_last_*: 周期処理の時刻管理
+ */
+static AppMode g_app_mode = APP_MODE_PARAMETER;
+static uint8_t g_error_code = ERR_NONE;
+static uint32_t g_boot_tick = 0U;
+static uint32_t g_last_control_tick = 0U;
+static uint32_t g_last_status_tick = 0U;
+static uint32_t g_last_can_rx_tick = 0U;
+
+static MotorControl g_motors[MOTOR_COUNT];
+
+static int16_t read_i16_le(const uint8_t *buf);
+static int clamp_int(int value, int min_value, int max_value);
+static void update_led_state(void);
+static uint8_t get_limit_state(uint8_t index);
+static void app_init_defaults(void);
+static void app_init_modules(void);
+static void process_can_message(void);
+static void handle_param_frame(uint8_t motor_index, const uint8_t *data, uint8_t dlc);
+static void handle_target_frame(const uint8_t *data, uint8_t dlc);
+static void handle_mode_frame(const uint8_t *data, uint8_t dlc);
+static uint8_t are_all_params_received(void);
+static void app_control_step(void);
+static void app_send_feedback(void);
+
+/* little-endianの2byteを符号付き16bitとして読む */
+static int16_t read_i16_le(const uint8_t *buf)
+{
+  return (int16_t)(((uint16_t)buf[0]) | ((uint16_t)buf[1] << 8));
+}
+
+/* 値を[min, max]に丸める（モータ指令の安全制限に利用） */
+static int clamp_int(int value, int min_value, int max_value)
+{
+  if (value < min_value)
+  {
+    return min_value;
+  }
+  if (value > max_value)
+  {
+    return max_value;
+  }
+  return value;
+}
+
+static void update_led_state(void)
+{
+  /* エラーなしで点灯、エラーありで消灯 */
+  GPIO_PinState led_state = (g_error_code == ERR_NONE) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, led_state);
+}
+
+static uint8_t get_limit_state(uint8_t index)
+{
+  uint16_t pin;
+
+  /* index 0..3 を PC0..PC3 に対応付け */
+  switch (index)
+  {
+    case 0: pin = GPIO_PIN_0; break;
+    case 1: pin = GPIO_PIN_1; break;
+    case 2: pin = GPIO_PIN_2; break;
+    default: pin = GPIO_PIN_3; break;
+  }
+
+  return (HAL_GPIO_ReadPin(GPIOC, pin) == GPIO_PIN_SET) ? 1U : 0U;
+}
+
+static void app_init_defaults(void)
+{
+  uint8_t i;
+
+  /* 全モータの制御状態を既定値で初期化 */
+  for (i = 0; i < MOTOR_COUNT; i++)
+  {
+    g_motors[i].total_count = 0;
+    g_motors[i].target_raw = 0;
+    g_motors[i].target_speed_rps = 0.0;
+    g_motors[i].target_angle_deg = 0.0;
+    g_motors[i].wheel_diameter_mm = DEFAULT_WHEEL_DIAMETER_MM;
+    g_motors[i].mode = CONTROL_SPEED;
+    g_motors[i].param_received = 0U;
+
+    /* フィードバック値（算出値）の初期化 */
+    g_motors[i].encoder_data.count = 0;
+    g_motors[i].encoder_data.rot = 0.0;
+    g_motors[i].encoder_data.deg = 0.0;
+    g_motors[i].encoder_data.distance = 0.0;
+    g_motors[i].encoder_data.velocity = 0.0;
+    g_motors[i].encoder_data.rps = 0.0;
+
+    /* PIDはゼロクリアしてから既定ゲインを設定 */
+    Pid_Init(&g_motors[i].pid);
+    Pid_setGainWithLimit(&g_motors[i].pid, DEFAULT_P_GAIN, DEFAULT_I_GAIN, DEFAULT_D_GAIN, 0.0, 100.0);
+    Pid_setInvert(&g_motors[i].pid, 1);
+  }
+}
+
+static void app_init_modules(void)
+{
+  /* まずソフトウェア状態を初期化 */
+  app_init_defaults();
+
+  /* モータドライバ接続（回路配線に対応） */
+  MotorDriver_Init(&g_motors[0].motor, &htim12, TIM_CHANNEL_1, &htim12, TIM_CHANNEL_2);
+  MotorDriver_Init(&g_motors[1].motor, &htim1, TIM_CHANNEL_1, &htim1, TIM_CHANNEL_2);
+  MotorDriver_Init(&g_motors[2].motor, &htim13, TIM_CHANNEL_1, &htim14, TIM_CHANNEL_1);
+  MotorDriver_Init(&g_motors[3].motor, &htim10, TIM_CHANNEL_1, &htim11, TIM_CHANNEL_1);
+
+  /* エンコーダ接続（タイマ対応） */
+  Encoder_Init(&g_motors[0].encoder, &htim5, g_motors[0].wheel_diameter_mm, DEFAULT_ENCODER_PPR, CONTROL_PERIOD_MS);
+  Encoder_Init(&g_motors[1].encoder, &htim4, g_motors[1].wheel_diameter_mm, DEFAULT_ENCODER_PPR, CONTROL_PERIOD_MS);
+  Encoder_Init(&g_motors[2].encoder, &htim3, g_motors[2].wheel_diameter_mm, DEFAULT_ENCODER_PPR, CONTROL_PERIOD_MS);
+  Encoder_Init(&g_motors[3].encoder, &htim2, g_motors[3].wheel_diameter_mm, DEFAULT_ENCODER_PPR, CONTROL_PERIOD_MS);
+
+  /* CAN1開始（受信割り込み有効化はCan_Init内部で実施） */
+  if (Can_Init(&hcan1) != HAL_OK)
+  {
+    /* 初期化失敗時は受信系エラーとして扱う */
+    g_error_code |= ERR_CAN_RX_TIMEOUT;
+  }
+
+  /* 周期処理の基準時刻をそろえる */
+  g_boot_tick = HAL_GetTick();
+  g_last_control_tick = g_boot_tick;
+  g_last_status_tick = g_boot_tick;
+  g_last_can_rx_tick = g_boot_tick;
+}
+
+static void handle_param_frame(uint8_t motor_index, const uint8_t *data, uint8_t dlc)
+{
+  int16_t p_raw;
+  int16_t i_raw;
+  int16_t d_raw;
+  int16_t wheel_dir_raw;
+  double wheel_diameter;
+
+  if (motor_index >= MOTOR_COUNT || dlc < 8U)
+  {
+    /* 不正フレームは破棄 */
+    return;
+  }
+
+  /* 8byteを [P,I,D,車輪径/方向] として展開 */
+  p_raw = read_i16_le(&data[0]);
+  i_raw = read_i16_le(&data[2]);
+  d_raw = read_i16_le(&data[4]);
+  wheel_dir_raw = read_i16_le(&data[6]);
+
+  /* ゲインはx100スケールで受信して実数へ変換 */
+  Pid_setGainWithLimit(&g_motors[motor_index].pid,
+                       (double)p_raw / 100.0,
+                       (double)i_raw / 100.0,
+                       (double)d_raw / 100.0,
+                       0.0,
+                       200.0);
+
+  /*
+   * wheel_dir_rawの符号で出力方向を指定
+   * 絶対値は車輪径[mm]
+   */
+  if (wheel_dir_raw < 0)
+  {
+    Pid_setInvert(&g_motors[motor_index].pid, -1);
+    wheel_diameter = (double)(-wheel_dir_raw);
+  }
+  else
+  {
+    Pid_setInvert(&g_motors[motor_index].pid, 1);
+    wheel_diameter = (double)wheel_dir_raw;
+  }
+
+  if (wheel_diameter > 0.0)
+  {
+    /* 実行時に車輪径を更新（速度/距離換算に反映） */
+    g_motors[motor_index].wheel_diameter_mm = wheel_diameter;
+    g_motors[motor_index].encoder.diameter = wheel_diameter;
+  }
+
+  /* このモータの初期パラメータ受信完了 */
+  g_motors[motor_index].param_received = 1U;
+}
+
+static void handle_target_frame(const uint8_t *data, uint8_t dlc)
+{
+  uint8_t i;
+  int16_t raw_target;
+
+  if (dlc < 8U)
+  {
+    return;
+  }
+
+  /* 各モータ2byteずつの目標値（x10）を読み込む */
+  for (i = 0; i < MOTOR_COUNT; i++)
+  {
+    raw_target = read_i16_le(&data[i * 2U]);
+    g_motors[i].target_raw = raw_target;
+    g_motors[i].target_speed_rps = (double)raw_target / 10.0;
+    g_motors[i].target_angle_deg = (double)raw_target / 10.0;
+  }
+}
+
+static void handle_mode_frame(const uint8_t *data, uint8_t dlc)
+{
+  uint8_t i;
+  int16_t raw_mode;
+
+  if (dlc < 8U)
+  {
+    return;
+  }
+
+  /* 0:速度制御, 1:角度制御（それ以外は速度扱い） */
+  for (i = 0; i < MOTOR_COUNT; i++)
+  {
+    raw_mode = read_i16_le(&data[i * 2U]);
+    if (raw_mode == 1)
+    {
+      g_motors[i].mode = CONTROL_ANGLE;
+    }
+    else
+    {
+      g_motors[i].mode = CONTROL_SPEED;
+    }
+  }
+}
+
+static void process_can_message(void)
+{
+  CanRxData rx_data;
+
+  /* 新規受信がなければ何もしない */
+  if (g_can1_rx_data.new_data_flag == 0U)
+  {
+    return;
+  }
+
+  /*
+   * 割り込み側で更新される共有データを安全にコピー
+   * new_data_flagをここでクリアして次フレームを受ける
+   */
+  __disable_irq();
+  rx_data = g_can1_rx_data;
+  g_can1_rx_data.new_data_flag = 0U;
+  __enable_irq();
+
+  /* 受信成功として監視時刻更新、RXタイムアウトフラグ解除 */
+  g_last_can_rx_tick = HAL_GetTick();
+  g_error_code &= (uint8_t)(~ERR_CAN_RX_TIMEOUT);
+
+  /* IDごとにハンドラを振り分け */
+  switch (rx_data.std_id)
+  {
+    case CAN_ID_PARAM_M1:
+      handle_param_frame(0U, rx_data.data, rx_data.dlc);
+      break;
+    case CAN_ID_PARAM_M2:
+      handle_param_frame(1U, rx_data.data, rx_data.dlc);
+      break;
+    case CAN_ID_PARAM_M3:
+      handle_param_frame(2U, rx_data.data, rx_data.dlc);
+      break;
+    case CAN_ID_PARAM_M4:
+      handle_param_frame(3U, rx_data.data, rx_data.dlc);
+      break;
+    case CAN_ID_TARGET:
+      handle_target_frame(rx_data.data, rx_data.dlc);
+      break;
+    case CAN_ID_MODE:
+      handle_mode_frame(rx_data.data, rx_data.dlc);
+      break;
+    default:
+      break;
+  }
+}
+
+static uint8_t are_all_params_received(void)
+{
+  uint8_t i;
+
+  /* 起動時に4モータ分パラメータがそろったか判定 */
+  for (i = 0; i < MOTOR_COUNT; i++)
+  {
+    if (g_motors[i].param_received == 0U)
+    {
+      return 0U;
+    }
+  }
+  return 1U;
+}
+
+static void app_control_step(void)
+{
+  uint8_t i;
+  int16_t pulse_count;
+  double now_value;
+  double target_value;
+  double control_out;
+  int speed_cmd;
+
+  /* 4モータ分を同じ周期で更新する */
+  for (i = 0; i < MOTOR_COUNT; i++)
+  {
+    /* この1周期で増減したパルス数を取得 */
+    pulse_count = (int16_t)Encoder_Read(&g_motors[i].encoder);
+    Encoder_Reset(&g_motors[i].encoder);
+
+    /*
+     * エンコーダの生パルスから物理量を計算
+     * - rot/deg: 累積位置
+     * - rps: この周期の速度
+     */
+    g_motors[i].total_count += pulse_count;
+    g_motors[i].encoder_data.count = g_motors[i].total_count;
+    g_motors[i].encoder_data.rot = (double)g_motors[i].total_count / (double)g_motors[i].encoder.ppr;
+    g_motors[i].encoder_data.deg = g_motors[i].encoder_data.rot * 360.0;
+    g_motors[i].encoder_data.distance = g_motors[i].encoder_data.rot * (PI * g_motors[i].wheel_diameter_mm);
+    g_motors[i].encoder_data.rps = ((double)pulse_count * 1000.0) / ((double)g_motors[i].encoder.ppr * CONTROL_PERIOD_MS);
+    g_motors[i].encoder_data.velocity = g_motors[i].encoder_data.rps * PI * g_motors[i].wheel_diameter_mm;
+
+    /* モードに応じてPIDの入力を切り替える */
+    if (g_motors[i].mode == CONTROL_ANGLE)
+    {
+      now_value = g_motors[i].encoder_data.deg;
+      target_value = g_motors[i].target_angle_deg;
+    }
+    else
+    {
+      now_value = g_motors[i].encoder_data.rps;
+      target_value = g_motors[i].target_speed_rps;
+    }
+
+    /* PID出力をモータ指令値へ変換し、過大指令を制限 */
+    control_out = Pid_control(&g_motors[i].pid, target_value, now_value, CONTROL_PERIOD_MS);
+    speed_cmd = clamp_int((int)control_out, -99, 99);
+    MotorDriver_setSpeed(&g_motors[i].motor, speed_cmd);
+  }
+}
+
+static void app_send_feedback(void)
+{
+  uint8_t tx_data[8];
+  HAL_StatusTypeDef st;
+
+  /* 0x120: リミットスイッチ状態（4byte） */
+  tx_data[0] = get_limit_state(0U);
+  tx_data[1] = get_limit_state(1U);
+  tx_data[2] = get_limit_state(2U);
+  tx_data[3] = get_limit_state(3U);
+  st = Can_Transmit(&hcan1, CAN_ID_STATUS_12, tx_data, 4U);
+
+  /* 0x121: モード4byte + エラー1byte + システム状態1byte */
+  tx_data[0] = (uint8_t)g_motors[0].mode;
+  tx_data[1] = (uint8_t)g_motors[1].mode;
+  tx_data[2] = (uint8_t)g_motors[2].mode;
+  tx_data[3] = (uint8_t)g_motors[3].mode;
+  tx_data[4] = g_error_code;
+  tx_data[5] = (uint8_t)g_app_mode;
+  if (Can_Transmit(&hcan1, CAN_ID_STATUS_34, tx_data, 6U) != HAL_OK)
+  {
+    st = HAL_ERROR;
+  }
+
+  /* 送信成否をエラーコードへ反映 */
+  if (st == HAL_OK)
+  {
+    g_error_code &= (uint8_t)(~ERR_CAN_TX_FAIL);
+  }
+  else
+  {
+    g_error_code |= ERR_CAN_TX_FAIL;
+  }
+}
+
 int main(void)
 {
 
@@ -57,8 +507,59 @@ int main(void)
   MX_USART2_Init();
   MX_USART3_Init();
 
+  /* 手書きアプリ層の初期化 */
+  app_init_modules();
+
   while (1)
   {
+    uint32_t now;
+
+    /* 受信済みCANフレームを処理 */
+    process_can_message();
+
+    now = HAL_GetTick();
+
+    /* 一定時間受信がない場合は通信異常とする */
+    if ((uint32_t)(now - g_last_can_rx_tick) > CAN_RX_TIMEOUT_MS)
+    {
+      g_error_code |= ERR_CAN_RX_TIMEOUT;
+    }
+
+    /*
+     * 起動直後はパラメータ待機モード
+     * - 4モータ分そろえば制御開始
+     * - タイムアウトならデフォルト値で制御開始
+     */
+    if (g_app_mode == APP_MODE_PARAMETER)
+    {
+      if (are_all_params_received() != 0U)
+      {
+        g_app_mode = APP_MODE_CONTROL;
+        g_error_code &= (uint8_t)(~ERR_INIT_TIMEOUT);
+      }
+      else if ((uint32_t)(now - g_boot_tick) > INIT_WAIT_TIMEOUT_MS)
+      {
+        g_app_mode = APP_MODE_CONTROL;
+        g_error_code |= ERR_INIT_TIMEOUT;
+      }
+    }
+
+    /* 制御実行モード時のみ1ms周期でPIDを回す */
+    if ((g_app_mode == APP_MODE_CONTROL) && ((uint32_t)(now - g_last_control_tick) >= CONTROL_PERIOD_MS))
+    {
+      g_last_control_tick += CONTROL_PERIOD_MS;
+      app_control_step();
+    }
+
+    /* 10ms周期でROS2へ状態通知 */
+    if ((uint32_t)(now - g_last_status_tick) >= STATUS_PERIOD_MS)
+    {
+      g_last_status_tick += STATUS_PERIOD_MS;
+      app_send_feedback();
+    }
+
+    /* LEDは常に最新エラー状態を反映 */
+    update_led_state();
 
   }
   
