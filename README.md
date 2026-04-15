@@ -210,3 +210,175 @@ Payload (6B)
 - 受信データを6系統PWM比較値へ反映
 - TIM1/TIM2/TIM3を1MHzカウンタ化 (Prescaler=83)、Period=19999で50Hz PWMを生成
 
+## altair_gui.py - MDD制御ツール
+
+Windows PC上で実行するPythonベースのGUIツールです。USB-to-CANアダプタを使用してAltair MDD(モータドライバー)を制御します。
+
+現行版は以下に対応しています。
+
+- CANビットレート 1Mbps 固定
+- 4モーター個別 PID パラメータ設定
+- 4モーター目標値の同時送信
+- 0x120 / 0x121 のライブステータス表示
+
+### インストール
+
+#### 前提条件
+- Python 3.9以上
+- USB-to-CANアダプタ (例: PEAK PCAN-USB, Kvaser等)
+- CANドライバが適切にインストールされていること
+
+#### パッケージ インストール
+
+```bash
+pip install python-can
+```
+
+### 使用方法
+
+#### 1. スクリプト実行
+
+```bash
+python altair_gui.py
+```
+
+GUI ウィンドウが起動します。
+
+#### 2. CAN接続設定
+
+**Connection タブ:**
+- **Interface**: CAN インターフェース (例: `slcan`, `pcan`, `kvaser`)
+  - `slcan`: シリアルCAN (デバイスマネージャーで COM ポート確認)
+  - `pcan`: PEAK PCAN-USB等
+  - `kvaser`: Kvaser製アダプタ
+- **Channel/COM**: デバイスポートまたはチャネル (例: `COM3`, `0`)
+- **Bitrate**: 1,000,000 bps 固定
+- **Connect ボタン**: クリックして CAN バス接続
+
+接続成功時、ステータス表示が `Connected ...` になります。
+
+#### 3. パラメータ設定
+
+**Per-Motor PID Parameters タブ:**
+- **M1-M4 それぞれに個別で** P Gain / I Gain / D Gain / Wheel Dia / Invert を設定可能
+- **Send M1 ... Send M4**: モーター単体へ送信
+- **Copy M1 to All**: M1の設定をM2-M4へ複製
+- **Send All Params**: 4モーターへ一括送信
+
+例: P Gain = 1.5 → CAN メッセージに 150 として送信
+
+#### 4. 制御モード & 目標値
+
+**Control & Targets タブ:**
+- **モード選択**:
+  - Velocity Mode: 速度制御 (目標回転速度 [rps] ×10)
+  - Angle/Pos Mode: 角度制御 (目標角度 [deg] ×10)
+- **Send Mode ボタン**: 選択したモードを 4 モーター全て に送信
+- **M1/M2/M3/M4 Target**: 4モーター目標値 (×10で内部送信)
+- **Send Targets ボタン**: 目標値を送信
+- **STOP ボタン**: 全モーター停止 (目標値を 0 に設定)
+
+例:
+- Velocity Mode で M1 Target = 5.0 → 実際の目標回転速度 0.5 rps
+
+#### 5. ログ表示
+
+下部の **Log** 領域にCAN送受信メッセージが表示されます。
+
+#### 6. ライブステータス表示
+
+**Live Status パネル**で以下を表示します。
+- 0x120: Limit SW1-SW4
+- 0x121: M1-M4モード、エラーコード、システム状態
+
+### CAN接続のトラブルシューティング
+
+#### "No module named 'can'" エラー
+
+python-can ライブラリがインストールされていません:
+```bash
+pip install python-can
+```
+
+#### "CAN not connected!" エラー
+
+- USB-to-CAN アダプタが接続されているか確認
+- Interface と Channel/COM の設定値が正しいか確認
+- デバイスマネージャーで COM ポートが認識されているか確認
+
+#### 接続できても送信が失敗する場合
+
+- MCU 側の CAN ビットレート (1Mbps) とPCの設定が一致しているか確認
+- MCU の電源が入っているか確認
+- CAN トランシーバーの接続状態を確認
+
+### CAN メッセージフォーマット
+
+本ツールが送信するメッセージ:
+
+| 目的 | CAN ID | Payload |
+|---|---|---|
+| Motor1 パラメータ | 0x200 | P, I, D, 径 (各 int16 little-endian) |
+| Motor2 パラメータ | 0x201 | " |
+| Motor3 パラメータ | 0x203 | " |
+| Motor4 パラメータ | 0x204 | " |
+| モード指令 | 0x211 | M1, M2, M3, M4 (各 int16 little-endian) |
+| 目標値 | 0x210 | M1, M2, M3, M4 (各 int16 little-endian) |
+
+詳細は本README の「MDD - CAN通信仕様」セクションを参照。
+
+### サンプル手順
+
+1. GUI を起動: `python altair_gui.py`
+2. Interface = `slcan`, Channel/COM = `COM3` に設定
+3. Connect ボタンをクリック
+4. M1-M4 のP/I/D/径を設定 → Send All Params
+5. モードを "Velocity Mode" に選択 → Send Mode
+6. M1-M4 Target を設定 → Send Targets
+7. ログに "TX ID:0x211" "TX ID:0x200" 等が表示されれば成功
+
+## altair_gui_ubuntu.py - Ubuntu向けMDD制御ツール
+
+Ubuntu向けのPython GUIツールです。基本機能はWindows版と同じで、以下に対応しています。
+
+- 4モーター個別PID設定 (M1-M4)
+- 4モーター目標値送信
+- モード一括送信 (0x211)
+- 0x120 / 0x121 ライブステータス表示
+
+### Ubuntuセットアップ
+
+```bash
+sudo apt update
+sudo apt install -y python3 python3-pip python3-tk can-utils
+python3 -m pip install --user python-can
+```
+
+### SocketCANを1Mbpsで有効化
+
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 up type can bitrate 1000000
+ip -details link show can0
+```
+
+### 起動方法
+
+```bash
+python3 altair_gui_ubuntu.py
+```
+
+### 使い方
+
+1. Interface を `socketcan`、Channel を `can0` に設定
+2. Connect を押す
+3. M1-M4 のPIDと車輪径を設定して `Send All Params`
+4. Velocity / Angle を選んで `Send Mode`
+5. M1-M4 Target を入力して `Send Targets`
+6. Live Status で 0x120 / 0x121 を確認
+
+### 補足
+
+- `socketcan`使用時はビットレート設定をOS側 (`ip link`) で行います。
+- `slcan`など別インターフェース使用時は、アダプタに合わせて Interface / Channel を変更してください。
+
