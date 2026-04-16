@@ -14,16 +14,14 @@
 #define CAN_RX_TIMEOUT_MS 1000U
 
 /* ===== ROS2 -> MDD 受信ID ===== */
-#define CAN_ID_PARAM_M1 0x200U
-#define CAN_ID_PARAM_M2 0x201U
-#define CAN_ID_PARAM_M3 0x202U
-#define CAN_ID_PARAM_M4 0x203U
+/* マルチプレクス方式：Byte0=モータインデックス */
+#define CAN_ID_PARAM 0x200U
+/* 統合フレーム：目標値(15bit) + MSB=モードフラグ */
 #define CAN_ID_TARGET 0x210U
-#define CAN_ID_MODE 0x211U
 
 /* ===== MDD -> ROS2 送信ID ===== */
-#define CAN_ID_STATUS_12 0x120U
-#define CAN_ID_STATUS_34 0x121U
+/* 統合フレーム：Byte0=SWstate|SysState|ErrCode, Byte1-4=各モータモード */
+#define CAN_ID_STATUS 0x120U
 
 /* ===== エラーコード（ビットフラグ） ===== */
 #define ERR_NONE 0x00U
@@ -128,9 +126,8 @@ static uint8_t get_limit_state(uint8_t index);
 static void app_init_defaults(void);
 static void app_init_modules(void);
 static void process_can_message(void);
-static void handle_param_frame(uint8_t motor_index, const uint8_t *data, uint8_t dlc);
+static void handle_param_frame(const uint8_t *data, uint8_t dlc);
 static void handle_target_frame(const uint8_t *data, uint8_t dlc);
-static void handle_mode_frame(const uint8_t *data, uint8_t dlc);
 static uint8_t are_all_params_received(void);
 static void app_control_step(void);
 static void app_send_feedback(void);
@@ -239,27 +236,38 @@ static void app_init_modules(void)
   g_last_can_rx_tick = g_boot_tick;
 }
 
-static void handle_param_frame(uint8_t motor_index, const uint8_t *data, uint8_t dlc)
+static void handle_param_frame(const uint8_t *data, uint8_t dlc)
 {
+  uint8_t motor_index;
   int16_t p_raw;
   int16_t i_raw;
   int16_t d_raw;
   int16_t wheel_dir_raw;
   double wheel_diameter;
 
-  if (motor_index >= MOTOR_COUNT || dlc < 8U)
+  if (dlc < 7U)
   {
     /* 不正フレームは破棄 */
     return;
   }
 
-  /* 8byteを [P,I,D,車輪径/方向] として展開 */
-  p_raw = read_i16_le(&data[0]);
-  i_raw = read_i16_le(&data[2]);
-  d_raw = read_i16_le(&data[4]);
-  wheel_dir_raw = read_i16_le(&data[6]);
+  /* Byte 0: モータインデックス */
+  motor_index = data[0] & 0x0FU;
+  if (motor_index >= MOTOR_COUNT)
+  {
+    return;
+  }
 
-  /* ゲインはx100スケールで受信して実数へ変換 */
+  /* Byte 1-2: Pゲイン(int8のx100) */
+  p_raw = (int16_t)((int8_t)data[1]) * 100;
+  /* Byte 2: Iゲイン */
+  i_raw = (int16_t)((int8_t)data[2]) * 100;
+  /* Byte 3: Dゲイン */
+  d_raw = (int16_t)((int8_t)data[3]) * 100;
+  /* Byte 4-5: 車輪径(int16_t, mm単位) */
+  wheel_dir_raw = read_i16_le(&data[4]);
+
+  /* ゲインはx100スケールで実数へ変換 */
   Pid_setGainWithLimit(&g_motors[motor_index].pid,
                        (double)p_raw / 100.0,
                        (double)i_raw / 100.0,
@@ -296,44 +304,43 @@ static void handle_param_frame(uint8_t motor_index, const uint8_t *data, uint8_t
 static void handle_target_frame(const uint8_t *data, uint8_t dlc)
 {
   uint8_t i;
+  int16_t raw_with_mode;
   int16_t raw_target;
+  uint8_t mode_bit;
 
   if (dlc < 8U)
   {
     return;
   }
 
-  /* 各モータ2byteずつの目標値（x10）を読み込む */
+  /* 各モータ2byteずつ（目標値15bit + MSB=モード） */
   for (i = 0; i < MOTOR_COUNT; i++)
   {
-    raw_target = read_i16_le(&data[i * 2U]);
+    raw_with_mode = read_i16_le(&data[i * 2U]);
+    
+    /* MSB: モードフラグ (負数判定) */
+    mode_bit = (raw_with_mode < 0) ? 1U : 0U;
+    
+    /* 下位15ビット: 目標値 */
+    raw_target = raw_with_mode & 0x7FFF;
+    /* 負数の場合は符号を維持 */
+    if (mode_bit)
+    {
+      raw_target = -raw_target;
+    }
+    
     g_motors[i].target_raw = raw_target;
     g_motors[i].target_speed_rps = (double)raw_target / 10.0;
     g_motors[i].target_angle_deg = (double)raw_target / 10.0;
-  }
-}
-
-static void handle_mode_frame(const uint8_t *data, uint8_t dlc)
-{
-  uint8_t i;
-  int16_t raw_mode;
-
-  if (dlc < 8U)
-  {
-    return;
-  }
-
-  /* 0:速度制御, 1:角度制御（それ以外は速度扱い） */
-  for (i = 0; i < MOTOR_COUNT; i++)
-  {
-    raw_mode = read_i16_le(&data[i * 2U]);
-    if (raw_mode == 1)
+    
+    /* モード設定 */
+    if (mode_bit == 0U)
     {
-      g_motors[i].mode = CONTROL_ANGLE;
+      g_motors[i].mode = CONTROL_SPEED;
     }
     else
     {
-      g_motors[i].mode = CONTROL_SPEED;
+      g_motors[i].mode = CONTROL_ANGLE;
     }
   }
 }
@@ -364,23 +371,11 @@ static void process_can_message(void)
   /* IDごとにハンドラを振り分け */
   switch (rx_data.std_id)
   {
-    case CAN_ID_PARAM_M1:
-      handle_param_frame(0U, rx_data.data, rx_data.dlc);
-      break;
-    case CAN_ID_PARAM_M2:
-      handle_param_frame(1U, rx_data.data, rx_data.dlc);
-      break;
-    case CAN_ID_PARAM_M3:
-      handle_param_frame(2U, rx_data.data, rx_data.dlc);
-      break;
-    case CAN_ID_PARAM_M4:
-      handle_param_frame(3U, rx_data.data, rx_data.dlc);
+    case CAN_ID_PARAM:
+      handle_param_frame(rx_data.data, rx_data.dlc);
       break;
     case CAN_ID_TARGET:
       handle_target_frame(rx_data.data, rx_data.dlc);
-      break;
-    case CAN_ID_MODE:
-      handle_mode_frame(rx_data.data, rx_data.dlc);
       break;
     default:
       break;
@@ -454,25 +449,49 @@ static void app_send_feedback(void)
 {
   uint8_t tx_data[8];
   HAL_StatusTypeDef st;
+  uint8_t status_byte;
+  uint8_t i;
 
-  /* 0x120: リミットスイッチ状態（4byte） */
-  tx_data[0] = get_limit_state(0U);
-  tx_data[1] = get_limit_state(1U);
-  tx_data[2] = get_limit_state(2U);
-  tx_data[3] = get_limit_state(3U);
-  st = Can_Transmit(&hcan1, CAN_ID_STATUS_12, tx_data, 4U);
-
-  /* 0x121: モード4byte + エラー1byte + システム状態1byte */
-  tx_data[0] = (uint8_t)g_motors[0].mode;
-  tx_data[1] = (uint8_t)g_motors[1].mode;
-  tx_data[2] = (uint8_t)g_motors[2].mode;
-  tx_data[3] = (uint8_t)g_motors[3].mode;
-  tx_data[4] = g_error_code;
-  tx_data[5] = (uint8_t)g_app_mode;
-  if (Can_Transmit(&hcan1, CAN_ID_STATUS_34, tx_data, 6U) != HAL_OK)
+  /* 新 0x120: 統合ステータス (8byte) */
+  /* Byte 0: 
+     [Bit 0-3] リミットSW状態（M1-M4）
+     [Bit 4] システム状態（APP_MODE_PARAMETER:0, APP_MODE_CONTROL:1）
+     [Bit 5-7] エラーコード（3bit）
+  */
+  status_byte = 0U;
+  
+  /* リミットSW状態を下位4ビットに */
+  for (i = 0; i < MOTOR_COUNT; i++)
   {
-    st = HAL_ERROR;
+    if (get_limit_state(i))
+    {
+      status_byte |= (uint8_t)(1U << i);
+    }
   }
+  
+  /* システム状態をBit 4に */
+  if (g_app_mode == APP_MODE_CONTROL)
+  {
+    status_byte |= (uint8_t)(1U << 4);
+  }
+  
+  /* エラーコード（下位3bit）をBit 5-7に */
+  status_byte |= (uint8_t)((g_error_code & 0x07U) << 5);
+  
+  tx_data[0] = status_byte;
+  
+  /* Byte 1-4: 各モータのモード */
+  for (i = 0; i < MOTOR_COUNT; i++)
+  {
+    tx_data[1 + i] = (uint8_t)g_motors[i].mode;
+  }
+  
+  /* Byte 5-7: 予備 */
+  tx_data[5] = 0U;
+  tx_data[6] = 0U;
+  tx_data[7] = 0U;
+  
+  st = Can_Transmit(&hcan1, CAN_ID_STATUS, tx_data, 8U);
 
   /* 送信成否をエラーコードへ反映 */
   if (st == HAL_OK)

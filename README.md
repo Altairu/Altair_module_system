@@ -54,78 +54,88 @@
 6. LED制御
    エラーなしでON、エラーありでOFFにします。
 
-### CAN通信仕様 (すべて CAN1)
+### CAN通信仕様 (すべて CAN1, 1Mbps)
 
-#### A. パラメータ設定 (ROS2 -> MDD)
+#### A. パラメータ設定 (ROS2 -> MDD) [提案3: マルチプレクス化]
 
-CAN ID:
-- Motor1: 0x200
-- Motor2: 0x201
-- Motor3: 0x202
-- Motor4: 0x203
+CAN ID: **0x200** (マルチプレクス方式)
 
-Payload: 8B (little-endian int16)
-- Byte0-1: Pゲイン x100
-- Byte2-3: Iゲイン x100
-- Byte4-5: Dゲイン x100
-- Byte6-7: 車輪径/出力方向
+Payload: 7B
+- Byte0: **モータインデックス** (0x00-0x03)
+- Byte1: Pゲイン [int8] （100倍スケール）
+- Byte2: Iゲイン [int8] （100倍スケール）
+- Byte3: Dゲイン [int8] （100倍スケール）
+- Byte4-5: 車輪径/出力方向 [int16_t LE, mm単位]
+- Byte6: 設定フラグ（将来用、0x00）
 
-Byte6-7の解釈:
-- 絶対値: 車輪径[mm]
-- 符号: PID出力方向 (正=通常, 負=反転)
+**変更点:**
+- 旧: 0x200-0x203 の4メッセージ → 新: 0x200 の1メッセージ（モータインデックス付き）
+- バス上のトラフィック削減
+- 送信側で 0-3ms, 25-28ms, 50-53ms, 75-78ms などでローテーション送信
 
-例:
-- 0x0064 (100) -> 車輪径 100mm, 通常方向
-- 0xFF9C (-100) -> 車輪径 100mm, 反転方向
+**例:**
+```
+M0パラメータ送信: ID=0x200, Data=[0x00, 0x50, 0x00, 0x02, 0x41, 0x00, 0x00] 
+  -> M0: P=0.50, I=0.00, D=0.02, wheel=65mm
+M1パラメータ送信: ID=0x200, Data=[0x01, 0x50, 0x00, 0x02, 0x41, 0x00, 0x00]
+  -> M1: P=0.50, I=0.00, D=0.02, wheel=65mm
+```
 
-#### B. 目標値・モード指令 (ROS2 -> MDD)
+#### B. 目標値・モード指令 (ROS2 -> MDD) [提案1: 統合化]
 
-CAN ID: 0x210 (目標値)
-
-Payload: 8B (little-endian int16)
-- Byte0-1: M1目標 x10
-- Byte2-3: M2目標 x10
-- Byte4-5: M3目標 x10
-- Byte6-7: M4目標 x10
-
-スケール:
-- 速度モード時: 目標速度[rps] x10
-- 角度モード時: 目標角度[deg] x10
-
-CAN ID: 0x211 (モード指令)
+CAN ID: **0x210** (統合フレーム)
 
 Payload: 8B (little-endian int16)
-- Byte0-1: M1モード
-- Byte2-3: M2モード
-- Byte4-5: M3モード
-- Byte6-7: M4モード
+- Byte0-1: M1 目標値(15bit) + MSB(**モードフラグ**) [int16_t LE]
+- Byte2-3: M2 目標値(15bit) + MSB(**モードフラグ**) [int16_t LE]
+- Byte4-5: M3 目標値(15bit) + MSB(**モードフラグ**) [int16_t LE]
+- Byte6-7: M4 目標値(15bit) + MSB(**モードフラグ**) [int16_t LE]
 
-モード値:
-- 0: 速度制御
-- 1: 角度制御
+**モードフラグ (MSB):**
+- MSB = 0: 速度制御 → 目標値 = 目標速度[rps] × 10
+- MSB = 1: 角度制御 → 目標値 = 目標角度[deg] × 10
 
-備考:
-- モードは受信後に保持され、次に0x211を受信するまで継続します。
+**エンコーディング:**
+```
+例1) M0=速度100 rps (100×10=1000)
+  value_s16 = 1000  →  LSB=0, Payload[0-1] = 0xE8 0x03
 
-#### C. ステータス返信 (MDD -> ROS2)
+例2) M1=角度90 deg (90×10=900, モード=角度)
+  value_s16 = -900  →  MSB=1, Payload[2-3] = 0x84 0xFC
+```
 
-CAN ID: 0x120 (リミットスイッチ)
+**変更点:**
+- 旧: 0x210 (目標値) + 0x211 (モード) の2メッセージ → 新: 0x210 の1メッセージ
+- ID 0x211 削除
+- バス上のトラフィック 50% 削減
 
-Payload: 4B
-- Byte0: Limit SW1
-- Byte1: Limit SW2
-- Byte2: Limit SW3
-- Byte3: Limit SW4
+#### C. ステータス返信 (MDD -> ROS2) [提案2: 統合化]
 
-CAN ID: 0x121 (Motor系ステータス)
+CAN ID: **0x120** (統合ステータス)
 
-Payload: 6B
-- Byte0: Motor1モード
-- Byte1: Motor2モード
-- Byte2: Motor3モード
-- Byte3: Motor4モード
-- Byte4: エラーコード
-- Byte5: システム状態 (0=パラメータ設定, 1=制御実行)
+Payload: 8B
+- **Byte0:** [Bit 0-3] リミットSW状態(M1-M4) + [Bit 4] システム状態 + [Bit 5-7] エラーコード
+  ```
+  Bit 0-3: Limit Switch (1bit each, 1=ON)
+    Bit0: Limit SW1
+    Bit1: Limit SW2
+    Bit2: Limit SW3
+    Bit3: Limit SW4
+  Bit 4: System State (0=パラメータ待機, 1=制御実行中)
+  Bit 5-7: Error Code (3bit, ex. 0-7)
+  ```
+- Byte1: M1 現在モード (0=速度, 1=角度)
+- Byte2: M2 現在モード
+- Byte3: M3 現在モード
+- Byte4: M4 現在モード
+- Byte5-7: 予備（将来用、例：電流フィードバックなど）
+
+**変更点:**
+- 旧: 0x120 (リミット4byte) + 0x121 (モード4byte + エラー + 状態) の2メッセージ
+  → 新: 0x120 の1メッセージ（Byte0で圧縮）
+- ID 0x121 削除
+- バス上のトラフィック 50% 削減
+- リーザーバイト拡張で将来の機能追加に対応
 
 ### エラーコード
 
