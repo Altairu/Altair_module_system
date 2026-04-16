@@ -2,17 +2,16 @@
 # -*- coding: utf-8 -*-
 """
 MDD（モータードライブ）制御 GUI ツール（Ubuntu用 socketcan対応）
-新統合 CAN プロトコル対応:
-  - 0x200: マルチプレクス パラメータ設定
-  - 0x210: 統合 目標値 + モード指令 (MSB=モードフラグ)
-  - 0x120: 統合 ステータス返信
+状態連動 CAN プロトコル対応:
+    - パラメータ設定中: 0x200-0x203 + 0x210(4B mode)
+    - 制御実行中: 0x210(8B target)
+    - ステータス返信: 0x220
 """
 
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 import threading
 import time
-import struct
 import queue
 from datetime import datetime
 
@@ -25,12 +24,15 @@ except ImportError:
 # ───────────────────────────────────────────────
 # 定数
 # ───────────────────────────────────────────────
-CAN_ID_PARAM   = 0x200  # パラメータ（マルチプレクス）
-CAN_ID_TARGET  = 0x210  # 目標値 + モード統合
-CAN_ID_STATUS  = 0x120  # ステータス返信
+CAN_ID_PARAM_BASE = 0x200  # Motor1-4: 0x200-0x203
+CAN_ID_MODE       = 0x210  # 4B モード設定
+CAN_ID_TARGET     = 0x210  # 8B 目標値設定
+CAN_ID_STATUS     = 0x220  # 6B ステータス返信
 
-TX_INTERVAL_10MS  = 0.001   # 1ms 目標値送信周期
-TX_INTERVAL_100MS = 0.010   # 10ms パラメータ送信周期
+TX_INTERVAL_10MS = 0.010
+
+APP_MODE_PARAMETER = 0
+APP_MODE_CONTROL = 1
 
 # コントロールモード
 CONTROL_SPEED = 0
@@ -57,7 +59,10 @@ class CANBackend:
             {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65},
         ]
         self.tx_enabled = False
-        self.last_param_tx_time = 0.0
+        self.param_send_requested = False
+        self.remote_app_mode = APP_MODE_PARAMETER
+        self.last_remote_app_mode = None
+        self.last_status_time = 0.0
 
     # ── セッター ────────────────────────────────
     def set_target(self, motor_index: int, val: int):
@@ -122,92 +127,113 @@ class CANBackend:
     # ── スレッド起動 ─────────────────────────────
     def start(self):
         self.running = True
-        self.last_param_tx_time = time.perf_counter()
         threading.Thread(target=self._tx_loop, daemon=True).start()
         threading.Thread(target=self._rx_loop, daemon=True).start()
 
     def stop(self):
         self.running = False
 
-    # ── 10ms/100ms 送信ループ ───────────────────
+    def request_parameter_send(self):
+        self.param_send_requested = True
+        self._log("📡 パラメータ設定送信を開始します")
+
+    # ── 状態連動 10ms 送信ループ ─────────────────
     def _tx_loop(self):
         next_time_target = time.perf_counter()
-        next_time_param = time.perf_counter() + 0.1  # 100ms後に最初のパラメータ送信
-        
+
         while self.running:
             now = time.perf_counter()
-            
-            # 10ms: 目標値 + モード送信
+
             if now >= next_time_target:
-                if self.bus and self.tx_enabled:
+                if self.bus:
                     try:
-                        self._send_target_frame()
+                        self._send_by_remote_state()
                     except Exception as e:
-                        self._log(f"⚠️ 目標値送信エラー: {e}")
+                        self._log(f"⚠️ 送信エラー: {e}")
                 next_time_target += TX_INTERVAL_10MS
-            
-            # 100ms: パラメータ送信（ローテーション）
-            if now >= next_time_param:
-                if self.bus and self.tx_enabled:
-                    try:
-                        param_index = int((now - self.last_param_tx_time) / TX_INTERVAL_100MS) % 4
-                        self._send_param_frame(param_index)
-                    except Exception as e:
-                        self._log(f"⚠️ パラメータ送信エラー: {e}")
-                next_time_param += TX_INTERVAL_100MS
-            
+
             time.sleep(0.001)
 
-    def _send_target_frame(self):
-        """0x210: 目標値(15bit) + MSB=モード"""
-        payload = bytearray(8)
-        
+    def _send_by_remote_state(self):
+        if self.remote_app_mode == APP_MODE_PARAMETER:
+            if self.param_send_requested:
+                self._send_parameter_sequence()
+        elif self.remote_app_mode == APP_MODE_CONTROL:
+            if self.tx_enabled:
+                self._send_target_frame()
+
+    def _send_parameter_sequence(self):
+        for motor_index in range(4):
+            self._send_param_frame(motor_index)
+        self._send_mode_frame()
+
+    @staticmethod
+    def _encode_i16_le(value: int):
+        value &= 0xFFFF
+        return value & 0xFF, (value >> 8) & 0xFF
+
+    def _send_mode_frame(self):
+        payload = bytearray(4)
+
         with self.lock:
             for i in range(4):
-                target = self._motors[i]["target"]
-                mode = self._motors[i]["mode"]
-                
-                # MSB をモードで設定
-                value = target & 0x7FFF
-                if mode == CONTROL_ANGLE:
-                    value |= 0x8000
-                
-                # リトルエンディアン
-                payload[i*2] = value & 0xFF
-                payload[i*2 + 1] = (value >> 8) & 0xFF
-        
+                payload[i] = self._motors[i]["mode"] & 0xFF
+
+        msg = can.Message(is_extended_id=False, arbitration_id=CAN_ID_MODE, data=payload)
+        self.bus.send(msg)
+        self._log(f"📤 0x210(mode) 送信: mode={[MODE_NAMES[self._motors[i]['mode']] for i in range(4)]}")
+
+    def _send_target_frame(self):
+        """0x210: 制御実行モード中の目標値 x10"""
+        payload = bytearray(8)
+
+        with self.lock:
+            for i in range(4):
+                scaled_target = int(round(float(self._motors[i]["target"]) * 10.0))
+                scaled_target = max(-32768, min(32767, scaled_target))
+                low, high = self._encode_i16_le(scaled_target)
+                payload[i * 2] = low
+                payload[i * 2 + 1] = high
+
         msg = can.Message(is_extended_id=False, arbitration_id=CAN_ID_TARGET, data=payload[:8])
         self.bus.send(msg)
-        self._log(f"📤 0x210 送信: target={[self._motors[i]['target'] for i in range(4)]}, mode={[MODE_NAMES[self._motors[i]['mode']] for i in range(4)]}")
+        self._log(f"📤 0x210(target) 送信: target={[self._motors[i]['target'] for i in range(4)]}")
 
     def _send_param_frame(self, motor_index: int):
-        """0x200: マルチプレクス パラメータ"""
-        payload = bytearray(7)
-        
+        """0x200-0x203: 各モータ 8B パラメータ"""
+        payload = bytearray(8)
+
         with self.lock:
             motor = self._motors[motor_index]
-            
-            # Byte 0: モータインデックス
-            payload[0] = motor_index
-            
-            # Byte 1-3: P, I, D (int8 × 100 スケール)
-            payload[1] = int(motor["p"] / 100) & 0xFF
-            payload[2] = int(motor["i"] / 100) & 0xFF
-            payload[3] = int(motor["d"] / 100) & 0xFF
-            
-            # Byte 4-5: 車輪径 (int16_t LE)
-            wheel_val = int(motor["wheel"]) & 0xFFFF
-            payload[4] = wheel_val & 0xFF
-            payload[5] = (wheel_val >> 8) & 0xFF
-            
-            # Byte 6: 設定フラグ（将来用）
-            payload[6] = 0x00
-        
-        msg = can.Message(is_extended_id=False, arbitration_id=CAN_ID_PARAM, data=payload[:7])
+            p_raw = int(round(float(motor["p"]) * 100.0))
+            i_raw = int(round(float(motor["i"]) * 100.0))
+            d_raw = int(round(float(motor["d"]) * 100.0))
+            wheel_raw = int(round(float(motor["wheel"])))
+
+        p_low, p_high = self._encode_i16_le(p_raw)
+        i_low, i_high = self._encode_i16_le(i_raw)
+        d_low, d_high = self._encode_i16_le(d_raw)
+        w_low, w_high = self._encode_i16_le(wheel_raw)
+
+        payload[0] = p_low
+        payload[1] = p_high
+        payload[2] = i_low
+        payload[3] = i_high
+        payload[4] = d_low
+        payload[5] = d_high
+        payload[6] = w_low
+        payload[7] = w_high
+
+        msg = can.Message(is_extended_id=False,
+                          arbitration_id=CAN_ID_PARAM_BASE + motor_index,
+                          data=payload)
         self.bus.send(msg)
-        
+
         motor_data = self.get_motor(motor_index)
-        self._log(f"📤 0x200 送信 (M{motor_index}): P={motor_data['p']:.2f}, I={motor_data['i']:.2f}, D={motor_data['d']:.2f}, wheel={motor_data['wheel']:.1f}mm")
+        self._log(
+            f"📤 0x{CAN_ID_PARAM_BASE + motor_index:03X} 送信 (M{motor_index + 1}): "
+            f"P={motor_data['p']:.2f}, I={motor_data['i']:.2f}, D={motor_data['d']:.2f}, wheel={motor_data['wheel']:.1f}mm"
+        )
 
     def _rx_loop(self):
         """ステータス受信ループ"""
@@ -222,22 +248,31 @@ class CANBackend:
             time.sleep(0.01)
 
     def _parse_status(self, data):
-        """0x120: 統合ステータス解析"""
-        if len(data) < 5:
+        """0x220: 4x Limit SW + Error + AppMode"""
+        if len(data) < 6:
             return
-        
-        status_byte = data[0]
-        limit_state = status_byte & 0x0F
-        sys_state = (status_byte >> 4) & 0x01
-        error_code = (status_byte >> 5) & 0x07
-        
-        modes = [data[i+1] & 0x01 for i in range(4)] if len(data) >= 5 else [0]*4
-        
-        limit_str = "".join([f"M{i}:{('ON' if limit_state & (1<<i) else 'OFF')}" for i in range(4)])
-        sys_str = "制御中" if sys_state else "パラメータ待機中"
-        mode_str = ",".join([MODE_NAMES.get(m, "?") for m in modes])
-        
-        self._log(f"📥 0x120: {limit_str} | SysState={sys_str} | Mode={mode_str} | Err={error_code:03b}")
+
+        limit_states = [1 if data[i] else 0 for i in range(4)]
+        error_code = data[4]
+        app_mode = data[5] & 0x01
+        previous_mode = self.remote_app_mode if self.last_remote_app_mode is not None else None
+
+        self.last_remote_app_mode = self.remote_app_mode
+        self.remote_app_mode = app_mode
+        self.last_status_time = time.perf_counter()
+
+        if previous_mode == APP_MODE_PARAMETER and app_mode == APP_MODE_CONTROL:
+            self.param_send_requested = False
+            self._log("✅ MDD が制御実行モードへ移行しました。パラメータ送信を停止します")
+
+        if previous_mode == APP_MODE_CONTROL and app_mode == APP_MODE_PARAMETER:
+            self.param_send_requested = False
+            self.tx_enabled = False
+            self._log("⛔ MDD が制御実行からパラメータ設定へ戻りました。送信を停止しました")
+
+        limit_str = ", ".join([f"SW{i + 1}={'ON' if state else 'OFF'}" for i, state in enumerate(limit_states)])
+        sys_str = "制御実行" if app_mode == APP_MODE_CONTROL else "パラメータ設定"
+        self._log(f"📥 0x220: {limit_str} | State={sys_str} | Err=0x{error_code:02X}")
 
     def _log(self, msg: str):
         try:
@@ -257,6 +292,7 @@ class AltairGUI:
         
         self.log_queue = queue.Queue(maxsize=100)
         self.backend = None
+        self.var_remote_state = tk.StringVar(value="未接続")
         
         self._build_ui()
         self._update_log()
@@ -283,7 +319,7 @@ class AltairGUI:
         conn_frame.columnconfigure(1, weight=1)
 
         # ─── モータ制御パネル ────────────────────
-        motors_frame = ttk.LabelFrame(self.root, text="モータ制御 (10ms 周期送信)", padding=10)
+        motors_frame = ttk.LabelFrame(self.root, text="モータ制御 (制御実行モード時のみ 10ms送信)", padding=10)
         motors_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         self.motor_vars = []
@@ -318,7 +354,7 @@ class AltairGUI:
             })
 
         # ─── パラメータパネル ────────────────────
-        param_frame = ttk.LabelFrame(self.root, text="パラメータ設定 (100ms ローテーション送信)", padding=10)
+        param_frame = ttk.LabelFrame(self.root, text="パラメータ設定 (設定送信ボタン押下後 10ms送信)", padding=10)
         param_frame.pack(fill=tk.X, padx=10, pady=5)
         
         self.param_vars = []
@@ -351,10 +387,16 @@ class AltairGUI:
         ctrl_frame = ttk.Frame(self.root)
         ctrl_frame.pack(fill=tk.X, padx=10, pady=5)
         
+        ttk.Label(ctrl_frame, text="MDD状態:").pack(side=tk.LEFT)
+        ttk.Label(ctrl_frame, textvariable=self.var_remote_state).pack(side=tk.LEFT, padx=(4, 16))
+
+        self.btn_param_send = ttk.Button(ctrl_frame, text="設定送信", command=self._on_start_param_send, state=tk.DISABLED)
+        self.btn_param_send.pack(side=tk.LEFT)
+
         self.var_tx_enabled = tk.BooleanVar(value=False)
-        self.cb_tx = ttk.Checkbutton(ctrl_frame, text="送信有効化", variable=self.var_tx_enabled,
+        self.cb_tx = ttk.Checkbutton(ctrl_frame, text="制御指令送信有効化", variable=self.var_tx_enabled,
                                     command=self._on_tx_toggle, state=tk.DISABLED)
-        self.cb_tx.pack(side=tk.LEFT)
+        self.cb_tx.pack(side=tk.LEFT, padx=(16, 0))
 
         # ─── ログ ────────────────────────────
         log_frame = ttk.LabelFrame(self.root, text="ログ", padding=5)
@@ -375,6 +417,7 @@ class AltairGUI:
                 # UI 更新
                 self.btn_connect.config(state=tk.DISABLED)
                 self.btn_disconnect.config(state=tk.NORMAL)
+                self.btn_param_send.config(state=tk.NORMAL)
                 self.cb_tx.config(state=tk.NORMAL)
                 for m in self.motor_vars:
                     m["slider"].config(state=tk.NORMAL)
@@ -392,20 +435,27 @@ class AltairGUI:
         # UI 更新
         self.btn_connect.config(state=tk.NORMAL)
         self.btn_disconnect.config(state=tk.DISABLED)
+        self.btn_param_send.config(state=tk.DISABLED)
         self.cb_tx.config(state=tk.DISABLED)
         self.var_tx_enabled.set(False)
+        self.var_remote_state.set("未接続")
+
+    def _on_start_param_send(self):
+        if self.backend:
+            self._on_motor_change()
+            self.backend.request_parameter_send()
 
     def _on_tx_toggle(self):
         if self.backend:
             self.backend.tx_enabled = self.var_tx_enabled.get()
             status = "有効" if self.backend.tx_enabled else "無効"
-            self._log(f"📡 送信が {status} になりました")
+            self._log(f"📡 制御指令送信が {status} になりました")
 
     def _on_motor_change(self, *args):
         if self.backend:
             for idx, m_var in enumerate(self.motor_vars):
                 try:
-                    target = int(m_var["target"].get())
+                    target = float(m_var["target"].get())
                 except ValueError:
                     target = 0
                 mode = m_var["mode"].get()
@@ -434,6 +484,17 @@ class AltairGUI:
                 self.log_text.config(state=tk.DISABLED)
         except queue.Empty:
             pass
+
+        if self.backend:
+            if self.backend.remote_app_mode == APP_MODE_CONTROL:
+                self.var_remote_state.set("制御実行")
+            else:
+                self.var_remote_state.set("パラメータ設定")
+
+            if self.var_tx_enabled.get() != self.backend.tx_enabled:
+                self.var_tx_enabled.set(self.backend.tx_enabled)
+        else:
+            self.var_remote_state.set("未接続")
         
         self.root.after(100, self._update_log)
 
