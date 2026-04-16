@@ -14,10 +14,11 @@ typedef struct {
     uint8_t  new_data_flag;  // 受信完了フラグ（読み取り後に0クリアすること）
 } CanRxData;
 
-extern CanRxData g_can1_rx_data;
+extern volatile CanRxData g_can1_rx_data;
 
 // 関数プロトタイプ
 HAL_StatusTypeDef Can_Init(CAN_HandleTypeDef *hcan);
 HAL_StatusTypeDef Can_Transmit(CAN_HandleTypeDef *hcan, uint32_t std_id, uint8_t *pData, uint8_t size);
+HAL_StatusTypeDef Can_ReadRxData(CanRxData *rx_data);
 
 #endif /* CAN_LIB_H */

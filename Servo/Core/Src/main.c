@@ -1,6 +1,41 @@
 #include "main.h"
+/* USER CODE BEGIN Includes */
 #include "Altair_library_for_CubeIDE/altair.h"
+/* USER CODE END Includes */
 
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+/* サーボ軸数（固定6軸） */
+#define SERVO_COUNT            6U
+/* サーボ目標角度を受信するCAN標準ID（100(dec) または 0x100(hex) を許可） */
+#define CAN_SERVO_CMD_STD_ID_DEC 100U
+#define CAN_SERVO_CMD_STD_ID_HEX 0x100U
+/* 通信途絶とみなすまでの無受信時間[ms] */
+#define CAN_RX_TIMEOUT_MS      200U
+/* サーボ最小パルス幅[us]（0deg相当） */
+#define SERVO_MIN_PULSE_US     500U
+/* サーボ最大パルス幅[us]（180deg相当） */
+#define SERVO_MAX_PULSE_US     2500U
+/* 受け付ける角度の上限[deg] */
+#define SERVO_MAX_DEGREE       180U
+/* 一般的なRCサーボ向けPWM: 50Hz（20ms周期）, 1us分解能 */
+#define SERVO_PWM_PRESCALER     83U
+#define SERVO_PWM_PERIOD_TICKS  19999U
+/* CAN値の微小な揺れを無視するしきい値[deg] */
+#define SERVO_CAN_DEADBAND_DEG   2U
+/* 同じ目標値を何回連続で受けたら反映するか */
+#define SERVO_CAN_STABLE_COUNT   3U
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan1;
 CAN_HandleTypeDef hcan2;
 
@@ -11,6 +46,20 @@ TIM_HandleTypeDef htim3;
 USART_HandleTypeDef husart2;
 USART_HandleTypeDef husart3;
 
+/* USER CODE BEGIN PV */
+/* 各サーボの目標角度（初期値は全軸90度） */
+static volatile uint8_t g_servo_target_deg[SERVO_COUNT] = {90U, 90U, 90U, 90U, 90U, 90U};
+/* 直近のCAN受信角度を一時保持 */
+static uint8_t g_servo_candidate_deg[SERVO_COUNT] = {90U, 90U, 90U, 90U, 90U, 90U};
+/* 同じ候補値が連続した回数 */
+static uint8_t g_servo_candidate_count[SERVO_COUNT] = {0U, 0U, 0U, 0U, 0U, 0U};
+/* 最後に有効なCANを受信した時刻[ms] */
+static volatile uint32_t g_last_can_rx_tick = 0U;
+/* 最初の有効CAN受信後にPWM出力を開始する */
+static uint8_t g_servo_outputs_started = 0U;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_CAN1_Init(void);
@@ -20,29 +69,17 @@ static void MX_TIM2_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_USART2_Init(void);
 static void MX_USART3_Init(void);
-
-/* サーボ軸数（固定6軸） */
-#define SERVO_COUNT            6U
-/* サーボ目標角度を受信するCAN標準ID */
-#define CAN_SERVO_CMD_STD_ID   100U
-/* 通信途絶とみなすまでの無受信時間[ms] */
-#define CAN_RX_TIMEOUT_MS      200U
-/* サーボ最小パルス幅[us]（0deg相当） */
-#define SERVO_MIN_PULSE_US     500U
-/* サーボ最大パルス幅[us]（180deg相当） */
-#define SERVO_MAX_PULSE_US     2400U
-/* 受け付ける角度の上限[deg] */
-#define SERVO_MAX_DEGREE       180U
-
-/* 各サーボの目標角度（初期値は全軸90度） */
-static volatile uint8_t g_servo_target_deg[SERVO_COUNT] = {90U, 90U, 90U, 90U, 90U, 90U};
-/* 最後に有効なCANを受信した時刻[ms] */
-static volatile uint32_t g_last_can_rx_tick = 0U;
-
+/* USER CODE BEGIN PFP */
 static uint32_t Servo_AngleToPulseUs(uint8_t degree);
 static void Servo_ApplyTargets(void);
 static void Servo_StartPwmOutputs(void);
 static void Servo_ProcessCanCommand(void);
+static uint8_t Servo_IsAcceptedCanId(uint32_t std_id);
+static uint8_t Servo_GetAbsDiff(uint8_t lhs, uint8_t rhs);
+/* USER CODE END PFP */
+
+/* USER CODE BEGIN 0 */
+/* USER CODE END 0 */
 
 int main(void)
 {
@@ -57,18 +94,22 @@ int main(void)
   MX_USART2_Init();
   MX_USART3_Init();
 
+  /* USER CODE BEGIN 2 */
   /* AltairライブラリのCAN初期化（フィルタ設定 + 受信割り込み開始） */
   if (Can_Init(&hcan1) != HAL_OK)
   {
     Error_Handler();
   }
 
-  /* 6ch PWM出力を開始し、初期角度を反映 */
-  Servo_StartPwmOutputs();
+  /* CAN受信待ちに関係なく、初期角度でPWM出力を開始する */
   Servo_ApplyTargets();
+  Servo_StartPwmOutputs();
+  g_servo_outputs_started = 1U;
+  /* USER CODE END 2 */
 
   while (1)
   {
+    /* USER CODE BEGIN WHILE */
     /* can_lib.c 側コールバックで受信されたフレームを処理 */
     Servo_ProcessCanCommand();
 
@@ -77,97 +118,8 @@ int main(void)
     {
       HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
     }
-
-    /* ポーリング待ちは使わず、次の割り込みまで待機 */
-    __WFI();
-  }
-  
-}
-
-static uint32_t Servo_AngleToPulseUs(uint8_t degree)
-{
-  uint32_t clamped_degree;
-  uint32_t pulse_range;
-
-  /* 角度入力を0..180degに収める */
-  clamped_degree = (degree > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : degree;
-  pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
-
-  /* 0..180deg を 500..2400us に線形変換 */
-  return SERVO_MIN_PULSE_US + ((pulse_range * clamped_degree) / SERVO_MAX_DEGREE);
-}
-
-static void Servo_ApplyTargets(void)
-{
-  /* ピン割当: PA6/PA7/PA8/PA9/PB8/PB9 */
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[0]));
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[1]));
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[2]));
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[3]));
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[4]));
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[5]));
-}
-
-static void Servo_StartPwmOutputs(void)
-{
-  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
   }
 
-  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
-  {
-    Error_Handler();
-  }
-
-  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-}
-
-static void Servo_ProcessCanCommand(void)
-{
-  uint32_t i;
-
-  if (g_can1_rx_data.new_data_flag == 0U)
-  {
-    return;
-  }
-
-  g_can1_rx_data.new_data_flag = 0U;
-
-  /* 標準ID 100 / DLC>=6 のみ処理 */
-  if ((g_can1_rx_data.std_id != CAN_SERVO_CMD_STD_ID) || (g_can1_rx_data.dlc < SERVO_COUNT))
-  {
-    return;
-  }
-
-  /* 各軸角度を更新（過大値は180degへクリップ） */
-  for (i = 0; i < SERVO_COUNT; i++)
-  {
-    g_servo_target_deg[i] = (g_can1_rx_data.data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : g_can1_rx_data.data[i];
-  }
-
-  /* 受信直後にPWMへ反映し、通信LEDを点灯 */
-  Servo_ApplyTargets();
-  g_last_can_rx_tick = HAL_GetTick();
-  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 }
 
 /**
@@ -311,9 +263,9 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 83;
+  htim1.Init.Prescaler = SERVO_PWM_PRESCALER;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 19999;
+  htim1.Init.Period = SERVO_PWM_PERIOD_TICKS;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
@@ -379,9 +331,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 83;
+  htim2.Init.Prescaler = SERVO_PWM_PRESCALER;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 19999;
+  htim2.Init.Period = SERVO_PWM_PERIOD_TICKS;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
@@ -432,9 +384,9 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 83;
+  htim3.Init.Prescaler = SERVO_PWM_PRESCALER;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 19999;
+  htim3.Init.Period = SERVO_PWM_PERIOD_TICKS;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
@@ -573,6 +525,135 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+static uint32_t Servo_AngleToPulseUs(uint8_t degree)
+{
+  uint32_t clamped_degree;
+  uint32_t pulse_range;
+
+  /* 角度入力を0..180degに収める */
+  clamped_degree = (degree > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : degree;
+  pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
+
+  /* 0..180deg を 500..2500us に線形変換 */
+  return SERVO_MIN_PULSE_US + ((pulse_range * clamped_degree) / SERVO_MAX_DEGREE);
+}
+
+static void Servo_ApplyTargets(void)
+{
+  /* ピン割当: PA6/PA7/PA8/PA9/PB8/PB9 */
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[0]));
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[1]));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[2]));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[3]));
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[4]));
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[5]));
+}
+
+static void Servo_StartPwmOutputs(void)
+{
+  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+static void Servo_ProcessCanCommand(void)
+{
+  CanRxData rx_data;
+  uint32_t i;
+  uint8_t target_changed = 0U;
+
+  if (Can_ReadRxData(&rx_data) != HAL_OK)
+  {
+    return;
+  }
+
+  g_last_can_rx_tick = HAL_GetTick();
+  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
+
+  /* 標準ID 100(dec) または 0x100(hex)、かつ DLC>=6 のみ処理 */
+  if ((Servo_IsAcceptedCanId(rx_data.std_id) == 0U) || (rx_data.dlc < SERVO_COUNT))
+  {
+    return;
+  }
+
+  /* 各軸角度を更新（過大値は180degへクリップ） */
+  for (i = 0; i < SERVO_COUNT; i++)
+  {
+    uint8_t received_degree = (rx_data.data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : rx_data.data[i];
+
+    if (Servo_GetAbsDiff(g_servo_candidate_deg[i], received_degree) <= SERVO_CAN_DEADBAND_DEG)
+    {
+      if (g_servo_candidate_count[i] < SERVO_CAN_STABLE_COUNT)
+      {
+        g_servo_candidate_count[i]++;
+      }
+    }
+    else
+    {
+      g_servo_candidate_deg[i] = received_degree;
+      g_servo_candidate_count[i] = 1U;
+    }
+
+    if ((g_servo_candidate_count[i] >= SERVO_CAN_STABLE_COUNT) &&
+        (Servo_GetAbsDiff(g_servo_target_deg[i], g_servo_candidate_deg[i]) > SERVO_CAN_DEADBAND_DEG))
+    {
+      g_servo_target_deg[i] = g_servo_candidate_deg[i];
+      target_changed = 1U;
+    }
+  }
+
+  if (g_servo_outputs_started == 0U)
+  {
+    Servo_StartPwmOutputs();
+    g_servo_outputs_started = 1U;
+  }
+
+  if (target_changed != 0U)
+  {
+    Servo_ApplyTargets();
+  }
+}
+
+static uint8_t Servo_IsAcceptedCanId(uint32_t std_id)
+{
+  if ((std_id == CAN_SERVO_CMD_STD_ID_DEC) || (std_id == CAN_SERVO_CMD_STD_ID_HEX))
+  {
+    return 1U;
+  }
+
+  return 0U;
+}
+
+static uint8_t Servo_GetAbsDiff(uint8_t lhs, uint8_t rhs)
+{
+  return (lhs > rhs) ? (lhs - rhs) : (rhs - lhs);
+}
 
 /* USER CODE END 4 */
 

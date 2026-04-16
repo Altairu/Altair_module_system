@@ -16,8 +16,8 @@
 /* ===== ROS2 -> MDD 受信ID ===== */
 #define CAN_ID_PARAM_M1 0x200U
 #define CAN_ID_PARAM_M2 0x201U
-#define CAN_ID_PARAM_M3 0x203U
-#define CAN_ID_PARAM_M4 0x204U
+#define CAN_ID_PARAM_M3 0x202U
+#define CAN_ID_PARAM_M4 0x203U
 #define CAN_ID_TARGET 0x210U
 #define CAN_ID_MODE 0x211U
 

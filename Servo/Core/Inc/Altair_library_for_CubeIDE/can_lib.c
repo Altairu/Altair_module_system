@@ -1,7 +1,7 @@
 #include "can_lib.h"
 
 // 受信データの実体（外部から参照できるようにする）
-CanRxData g_can1_rx_data = {0};
+volatile CanRxData g_can1_rx_data = {0};
 
 // フィルタ設定とCANの開始
 HAL_StatusTypeDef Can_Init(CAN_HandleTypeDef *hcan) {
@@ -54,9 +54,22 @@ HAL_StatusTypeDef Can_Transmit(CAN_HandleTypeDef *hcan, uint32_t std_id, uint8_t
 // HALの受信完了コールバックをオーバーライド
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan) {
     CAN_RxHeaderTypeDef rx_header;
-    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, g_can1_rx_data.data) == HAL_OK) {
+    if ((hcan->Instance == CAN1) && (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &rx_header, (uint8_t *)g_can1_rx_data.data) == HAL_OK)) {
         g_can1_rx_data.std_id      = rx_header.StdId;
         g_can1_rx_data.dlc         = rx_header.DLC;
         g_can1_rx_data.new_data_flag = 1;
     }
+}
+
+HAL_StatusTypeDef Can_ReadRxData(CanRxData *rx_data) {
+    if ((rx_data == NULL) || (g_can1_rx_data.new_data_flag == 0U)) {
+        return HAL_ERROR;
+    }
+
+    __disable_irq();
+    *rx_data = *(const CanRxData *)&g_can1_rx_data;
+    g_can1_rx_data.new_data_flag = 0U;
+    __enable_irq();
+
+    return HAL_OK;
 }
