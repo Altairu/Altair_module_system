@@ -304,7 +304,7 @@ class AltairGUI:
             e_target.pack(side=tk.LEFT, padx=5)
             
             # モード
-            ttk.Label(m_frame, text="モード:", padx=5).pack(side=tk.LEFT)
+            ttk.Label(m_frame, text="モード:").pack(side=tk.LEFT, padx=5)
             var_mode = tk.IntVar(value=CONTROL_SPEED)
             for mode_val, mode_name in MODE_NAMES.items():
                 ttk.Radiobutton(m_frame, text=mode_name, variable=var_mode, value=mode_val,
@@ -339,7 +339,7 @@ class AltairGUI:
             var_d = tk.StringVar(value="2")
             ttk.Entry(p_frame, textvariable=var_d, width=6).pack(side=tk.LEFT)
             
-            ttk.Label(p_frame, text="Wheel(mm):", padx=5).pack(side=tk.LEFT)
+            ttk.Label(p_frame, text="Wheel(mm):").pack(side=tk.LEFT, padx=5)
             var_wheel = tk.StringVar(value="65")
             ttk.Entry(p_frame, textvariable=var_wheel, width=6).pack(side=tk.LEFT)
             
