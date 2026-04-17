@@ -111,7 +111,7 @@ class CANBackend:
             return False
         
         try:
-            # Ubuntu/Linux: socketcan (vcan0 など)
+            # Ubuntu/Linux: socketcan (can0 など)
             self.bus = can.interface.Bus(interface='socketcan', channel=self.channel, bitrate=self.bitrate)
             self._log(f"✅ socketcan で接続: {self.channel} @ {self.bitrate} bps")
             return True
@@ -354,8 +354,8 @@ class AltairGUI:
         conn_frame = ttk.LabelFrame(self.root, text="CAN 接続 (socketcan)", padding=10)
         conn_frame.pack(fill=tk.X, padx=10, pady=5)
         
-        ttk.Label(conn_frame, text="Channel (vcan0 など):").grid(row=0, column=0, sticky=tk.W)
-        self.var_channel = tk.StringVar(value="vcan0")
+        ttk.Label(conn_frame, text="Channel (can0 など):").grid(row=0, column=0, sticky=tk.W)
+        self.var_channel = tk.StringVar(value="can0")
         ttk.Entry(conn_frame, textvariable=self.var_channel).grid(row=0, column=1, sticky=tk.EW)
         
         ttk.Label(conn_frame, text="Bitrate (bps):").grid(row=0, column=2, sticky=tk.W, padx=(20, 0))
