@@ -30,6 +30,9 @@ CAN_ID_TARGET     = 0x220  # 8B 目標値設定
 CAN_ID_STATUS     = 0x230  # 6B ステータス返信
 
 TX_INTERVAL_10MS = 0.010
+RX_TIMEOUT_FAST = 0.005
+STATUS_LOG_MIN_INTERVAL = 0.2
+TARGET_LOG_MIN_INTERVAL = 0.2
 
 APP_MODE_PARAMETER = 0
 APP_MODE_CONTROL = 1
@@ -70,6 +73,10 @@ class CANBackend:
         self.remote_app_mode = APP_MODE_PARAMETER
         self.last_remote_app_mode = None
         self.last_status_time = 0.0
+        self._last_status_log_time = 0.0
+        self._last_status_signature = None
+        self._last_target_log_time = 0.0
+        self._last_target_signature = None
 
     # ── セッター ────────────────────────────────
     def set_target(self, motor_index: int, val: int):
@@ -205,7 +212,15 @@ class CANBackend:
 
         msg = can.Message(is_extended_id=False, arbitration_id=CAN_ID_TARGET, data=payload[:8])
         self.bus.send(msg)
-        self._log(f"📤 0x220(target) 送信: target={[self._motors[i]['target'] for i in range(4)]}")
+
+        with self.lock:
+            target_signature = tuple(int(self._motors[i]["target"]) for i in range(4))
+        now = time.perf_counter()
+        should_log = (target_signature != self._last_target_signature) or ((now - self._last_target_log_time) >= TARGET_LOG_MIN_INTERVAL)
+        if should_log:
+            self._log(f"📤 0x220(target) 送信: target={list(target_signature)}")
+            self._last_target_signature = target_signature
+            self._last_target_log_time = now
 
     def _send_param_frame(self, motor_index: int):
         """0x200-0x203: 各モータ 8B パラメータ"""
@@ -252,12 +267,15 @@ class CANBackend:
         while self.running:
             if self.bus:
                 try:
-                    msg = self.bus.recv(timeout=0.1)
-                    if msg and msg.arbitration_id == CAN_ID_STATUS:
-                        self._parse_status(msg.data)
+                    # 短いタイムアウトで受信待ちし、取りこぼしを減らす。
+                    msg = self.bus.recv(timeout=RX_TIMEOUT_FAST)
+                    while msg is not None:
+                        if msg.arbitration_id == CAN_ID_STATUS:
+                            self._parse_status(msg.data)
+                        # 受信キューに溜まっている分を連続で処理。
+                        msg = self.bus.recv(timeout=0.0)
                 except Exception:
                     pass
-            time.sleep(0.01)
 
     def _parse_status(self, data):
         """0x230: 4x Limit SW + Error + AppMode"""
@@ -292,7 +310,14 @@ class CANBackend:
         if error_code & ERR_CAN_TX_FAIL:
             err_flags.append("CAN_TX_FAIL")
         err_str = "NONE" if not err_flags else ",".join(err_flags)
-        self._log(f"📥 0x230: {limit_str} | State={sys_str} | Err=0x{error_code:02X}({err_str})")
+
+        now = time.perf_counter()
+        signature = (tuple(limit_states), error_code, app_mode)
+        should_log = (signature != self._last_status_signature) or ((now - self._last_status_log_time) >= STATUS_LOG_MIN_INTERVAL)
+        if should_log:
+            self._log(f"📥 0x230: {limit_str} | State={sys_str} | Err=0x{error_code:02X}({err_str})")
+            self._last_status_signature = signature
+            self._last_status_log_time = now
 
     def _log(self, msg: str):
         try:
@@ -569,7 +594,7 @@ class AltairGUI:
         else:
             self.var_remote_state.set("未接続")
         
-        self.root.after(100, self._update_log)
+        self.root.after(20, self._update_log)
 
     def _log(self, msg: str):
         try:
