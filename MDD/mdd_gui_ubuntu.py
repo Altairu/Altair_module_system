@@ -39,6 +39,10 @@ CONTROL_SPEED = 0
 CONTROL_ANGLE = 1
 MODE_NAMES = {CONTROL_SPEED: "速度", CONTROL_ANGLE: "角度"}
 
+ERR_INIT_TIMEOUT = 0x01
+ERR_CAN_RX_TIMEOUT = 0x02
+ERR_CAN_TX_FAIL = 0x04
+
 # ───────────────────────────────────────────────
 # CAN 通信バックエンド
 # ───────────────────────────────────────────────
@@ -53,10 +57,10 @@ class CANBackend:
 
         # モータごとの制御パラメータ
         self._motors = [
-            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65},
-            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65},
-            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65},
-            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65},
+            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65, "dir": 1},
+            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65, "dir": 1},
+            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65, "dir": 1},
+            {"target": 0, "mode": CONTROL_SPEED, "p": 10, "i": 0, "d": 0, "wheel": 65, "dir": 1},
         ]
         self.tx_enabled = False
         self.param_send_requested = False
@@ -75,13 +79,14 @@ class CANBackend:
             if 0 <= motor_index < 4:
                 self._motors[motor_index]["mode"] = mode
 
-    def set_param(self, motor_index: int, p: float, i: float, d: float, wheel: float):
+    def set_param(self, motor_index: int, p: float, i: float, d: float, wheel: float, direction: int):
         with self.lock:
             if 0 <= motor_index < 4:
                 self._motors[motor_index]["p"] = p
                 self._motors[motor_index]["i"] = i
                 self._motors[motor_index]["d"] = d
                 self._motors[motor_index]["wheel"] = wheel
+                self._motors[motor_index]["dir"] = 1 if direction >= 0 else -1
 
     # ── ゲッター ────────────────────────────────
     def get_motor(self, index: int):
@@ -209,11 +214,14 @@ class CANBackend:
             i_raw = int(round(float(motor["i"]) * 100.0))
             d_raw = int(round(float(motor["d"]) * 100.0))
             wheel_raw = int(round(float(motor["wheel"])))
+            direction = 1 if int(motor["dir"]) >= 0 else -1
+
+        signed_wheel = wheel_raw * direction
 
         p_low, p_high = self._encode_i16_le(p_raw)
         i_low, i_high = self._encode_i16_le(i_raw)
         d_low, d_high = self._encode_i16_le(d_raw)
-        w_low, w_high = self._encode_i16_le(wheel_raw)
+        w_low, w_high = self._encode_i16_le(signed_wheel)
 
         payload[0] = p_low
         payload[1] = p_high
@@ -232,7 +240,8 @@ class CANBackend:
         motor_data = self.get_motor(motor_index)
         self._log(
             f"📤 0x{CAN_ID_PARAM_BASE + motor_index:03X} 送信 (M{motor_index + 1}): "
-            f"P={motor_data['p']:.2f}, I={motor_data['i']:.2f}, D={motor_data['d']:.2f}, wheel={motor_data['wheel']:.1f}mm"
+            f"P={motor_data['p']:.2f}, I={motor_data['i']:.2f}, D={motor_data['d']:.2f}, "
+            f"wheel={motor_data['wheel']:.1f}mm, dir={motor_data['dir']}"
         )
 
     def _rx_loop(self):
@@ -272,7 +281,15 @@ class CANBackend:
 
         limit_str = ", ".join([f"SW{i + 1}={'ON' if state else 'OFF'}" for i, state in enumerate(limit_states)])
         sys_str = "制御実行" if app_mode == APP_MODE_CONTROL else "パラメータ設定"
-        self._log(f"📥 0x220: {limit_str} | State={sys_str} | Err=0x{error_code:02X}")
+        err_flags = []
+        if error_code & ERR_INIT_TIMEOUT:
+            err_flags.append("INIT_TIMEOUT")
+        if error_code & ERR_CAN_RX_TIMEOUT:
+            err_flags.append("CAN_RX_TIMEOUT")
+        if error_code & ERR_CAN_TX_FAIL:
+            err_flags.append("CAN_TX_FAIL")
+        err_str = "NONE" if not err_flags else ",".join(err_flags)
+        self._log(f"📥 0x220: {limit_str} | State={sys_str} | Err=0x{error_code:02X}({err_str})")
 
     def _log(self, msg: str):
         try:
@@ -289,6 +306,7 @@ class AltairGUI:
         self.root = root
         self.root.title("MDD 制御 GUI (Ubuntu socketcan)")
         self.root.geometry("1000x700")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         
         self.log_queue = queue.Queue(maxsize=100)
         self.backend = None
@@ -332,7 +350,7 @@ class AltairGUI:
             
             # 目標値
             ttk.Label(m_frame, text="目標:").pack(side=tk.LEFT, padx=5)
-            var_target = tk.StringVar(value="0")
+            var_target = tk.DoubleVar(value=0.0)
             s_target = ttk.Scale(m_frame, from_=-32767, to=32767, variable=var_target,
                                 orient=tk.HORIZONTAL, command=self._on_motor_change)
             s_target.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
@@ -378,9 +396,14 @@ class AltairGUI:
             ttk.Label(p_frame, text="Wheel(mm):").pack(side=tk.LEFT, padx=5)
             var_wheel = tk.StringVar(value="65")
             ttk.Entry(p_frame, textvariable=var_wheel, width=6).pack(side=tk.LEFT)
+
+            ttk.Label(p_frame, text="Dir:").pack(side=tk.LEFT, padx=5)
+            var_dir = tk.IntVar(value=1)
+            ttk.Radiobutton(p_frame, text="+", variable=var_dir, value=1, command=self._on_motor_change).pack(side=tk.LEFT)
+            ttk.Radiobutton(p_frame, text="-", variable=var_dir, value=-1, command=self._on_motor_change).pack(side=tk.LEFT)
             
             self.param_vars.append({
-                "p": var_p, "i": var_i, "d": var_d, "wheel": var_wheel,
+                "p": var_p, "i": var_i, "d": var_d, "wheel": var_wheel, "dir": var_dir,
             })
 
         # ─── TX 有効化 ───────────────────────
@@ -470,7 +493,8 @@ class AltairGUI:
                     i = float(p_var["i"].get())
                     d = float(p_var["d"].get())
                     wheel = float(p_var["wheel"].get())
-                    self.backend.set_param(idx, p, i, d, wheel)
+                    direction = int(p_var["dir"].get())
+                    self.backend.set_param(idx, p, i, d, wheel, direction)
                 except ValueError:
                     pass
 
@@ -503,6 +527,12 @@ class AltairGUI:
             self.log_queue.put_nowait(msg)
         except queue.Full:
             pass
+
+    def _on_close(self):
+        if self.backend:
+            self.backend.disconnect()
+            self.backend = None
+        self.root.destroy()
 
 
 # ───────────────────────────────────────────────
