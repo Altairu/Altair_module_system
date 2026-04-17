@@ -35,8 +35,9 @@ extern TIM_HandleTypeDef htim14;
 #define CAN_RX_TIMEOUT_MS      1000
 
 #define CAN_ID_PARAM_BASE      0x200U
-#define CAN_ID_MODE_TARGET     0x210U
-#define CAN_ID_STATUS          0x220U
+#define CAN_ID_MODE            0x210U
+#define CAN_ID_TARGET          0x220U
+#define CAN_ID_STATUS          0x230U
 
 #define ERR_NORMAL         0x00U
 #define ERR_INIT_TIMEOUT   0x01U
@@ -205,11 +206,11 @@ static void MDD_ProcessCan(void)
     if (g_mode == MDD_MODE_PARAM_SET) {
         if ((id >= CAN_ID_PARAM_BASE) && (id <= (CAN_ID_PARAM_BASE + 3U))) {
             MDD_ProcessParamFrame(id, data, dlc);
-        } else if (id == CAN_ID_MODE_TARGET) {
+        } else if (id == CAN_ID_MODE) {
             MDD_ProcessModeFrame(data, dlc);
         }
     } else {
-        if ((id == CAN_ID_MODE_TARGET) && (dlc == 8U)) {
+        if ((id == CAN_ID_TARGET) && (dlc == 8U)) {
             MDD_ProcessTargetFrame(data, dlc);
         }
     }

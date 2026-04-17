@@ -4,8 +4,8 @@
 MDD（モータードライブ）制御 GUI ツール（Ubuntu用 socketcan対応）
 状態連動 CAN プロトコル対応:
     - パラメータ設定中: 0x200-0x203 + 0x210(4B mode)
-    - 制御実行中: 0x210(8B target)
-    - ステータス返信: 0x220
+    - 制御実行中: 0x220(8B target)
+    - ステータス返信: 0x230
 """
 
 import tkinter as tk
@@ -26,8 +26,8 @@ except ImportError:
 # ───────────────────────────────────────────────
 CAN_ID_PARAM_BASE = 0x200  # Motor1-4: 0x200-0x203
 CAN_ID_MODE       = 0x210  # 4B モード設定
-CAN_ID_TARGET     = 0x210  # 8B 目標値設定
-CAN_ID_STATUS     = 0x220  # 6B ステータス返信
+CAN_ID_TARGET     = 0x220  # 8B 目標値設定
+CAN_ID_STATUS     = 0x230  # 6B ステータス返信
 
 TX_INTERVAL_10MS = 0.010
 
@@ -202,7 +202,7 @@ class CANBackend:
 
         msg = can.Message(is_extended_id=False, arbitration_id=CAN_ID_TARGET, data=payload[:8])
         self.bus.send(msg)
-        self._log(f"📤 0x210(target) 送信: target={[self._motors[i]['target'] for i in range(4)]}")
+        self._log(f"📤 0x220(target) 送信: target={[self._motors[i]['target'] for i in range(4)]}")
 
     def _send_param_frame(self, motor_index: int):
         """0x200-0x203: 各モータ 8B パラメータ"""
@@ -257,7 +257,7 @@ class CANBackend:
             time.sleep(0.01)
 
     def _parse_status(self, data):
-        """0x220: 4x Limit SW + Error + AppMode"""
+        """0x230: 4x Limit SW + Error + AppMode"""
         if len(data) < 6:
             return
 
@@ -289,7 +289,7 @@ class CANBackend:
         if error_code & ERR_CAN_TX_FAIL:
             err_flags.append("CAN_TX_FAIL")
         err_str = "NONE" if not err_flags else ",".join(err_flags)
-        self._log(f"📥 0x220: {limit_str} | State={sys_str} | Err=0x{error_code:02X}({err_str})")
+        self._log(f"📥 0x230: {limit_str} | State={sys_str} | Err=0x{error_code:02X}({err_str})")
 
     def _log(self, msg: str):
         try:
