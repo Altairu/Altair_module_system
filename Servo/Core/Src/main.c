@@ -96,7 +96,8 @@ int main(void)
 
   /* USER CODE BEGIN 2 */
   /* AltairライブラリのCAN初期化（フィルタ設定 + 受信割り込み開始） */
-  if (Can_Init(&hcan1) != HAL_OK)
+  CanInitConfig can1_config = Can_DefaultInitConfig(&hcan1);
+  if (Can_Init(&hcan1, &can1_config) != HAL_OK)
   {
     Error_Handler();
   }
@@ -584,20 +585,20 @@ static void Servo_StartPwmOutputs(void)
 
 static void Servo_ProcessCanCommand(void)
 {
-  CanRxData rx_data;
   uint32_t i;
   uint8_t target_changed = 0U;
 
-  if (Can_ReadRxData(&rx_data) != HAL_OK)
+  if (g_can1_rx_data.new_data_flag == 0U)
   {
     return;
   }
+  g_can1_rx_data.new_data_flag = 0U;
 
   g_last_can_rx_tick = HAL_GetTick();
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 
   /* 標準ID 100(dec) または 0x100(hex)、かつ DLC>=6 のみ処理 */
-  if ((Servo_IsAcceptedCanId(rx_data.std_id) == 0U) || (rx_data.dlc < SERVO_COUNT))
+  if ((Servo_IsAcceptedCanId(g_can1_rx_data.std_id) == 0U) || (g_can1_rx_data.dlc < SERVO_COUNT))
   {
     return;
   }
@@ -605,7 +606,7 @@ static void Servo_ProcessCanCommand(void)
   /* 各軸角度を更新（過大値は180degへクリップ） */
   for (i = 0; i < SERVO_COUNT; i++)
   {
-    uint8_t received_degree = (rx_data.data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : rx_data.data[i];
+    uint8_t received_degree = (g_can1_rx_data.data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : g_can1_rx_data.data[i];
 
     if (Servo_GetAbsDiff(g_servo_candidate_deg[i], received_degree) <= SERVO_CAN_DEADBAND_DEG)
     {
