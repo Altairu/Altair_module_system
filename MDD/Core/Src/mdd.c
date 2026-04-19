@@ -9,7 +9,8 @@ typedef enum {
 
 typedef enum {
     MDD_CTRL_SPEED = 0,
-    MDD_CTRL_ANGLE = 1
+    MDD_CTRL_ANGLE = 1,
+    MDD_CTRL_POSITION = 2
 } MDD_CtrlMode_t;
 
 extern CAN_HandleTypeDef hcan1;
@@ -169,7 +170,15 @@ static void MDD_ProcessModeFrame(const uint8_t *data, uint8_t dlc)
     }
 
     for (int i = 0; i < MOTOR_COUNT; i++) {
-        g_ctrl_mode[i] = (data[i] == 0U) ? MDD_CTRL_SPEED : MDD_CTRL_ANGLE;
+        if (data[i] == 0U) {
+            g_ctrl_mode[i] = MDD_CTRL_SPEED;
+        } else if (data[i] == 1U) {
+            g_ctrl_mode[i] = MDD_CTRL_ANGLE;
+        } else if (data[i] == 2U) {
+            g_ctrl_mode[i] = MDD_CTRL_POSITION;
+        } else {
+            g_ctrl_mode[i] = MDD_CTRL_SPEED;
+        }
     }
 
     g_mode = MDD_MODE_CONTROL;
@@ -244,8 +253,10 @@ static void MDD_RunControlStep(void)
 
         if (g_ctrl_mode[i] == MDD_CTRL_SPEED) {
             feedback = g_encoder_data[i].rps;
-        } else {
+        } else if (g_ctrl_mode[i] == MDD_CTRL_ANGLE) {
             feedback = g_encoder_data[i].deg;
+        } else if (g_ctrl_mode[i] == MDD_CTRL_POSITION) {
+            feedback = g_encoder_data[i].distance;
         }
 
         double out = Pid_control(&g_pid[i], g_target_val[i], feedback, CONTROL_PERIOD_MS);
