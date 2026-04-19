@@ -65,9 +65,9 @@ CAN ID:
 - Motor4: 0x203
 
 Payload: 8B (little-endian int16)
-- Byte0-1: Pゲイン x100
-- Byte2-3: Iゲイン x100
-- Byte4-5: Dゲイン x100
+- Byte0-1: Pゲイン x1000
+- Byte2-3: Iゲイン x1000
+- Byte4-5: Dゲイン x1000
 - Byte6-7: 車輪径/出力方向
 
 Byte6-7の解釈:

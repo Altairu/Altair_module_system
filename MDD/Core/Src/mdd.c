@@ -140,9 +140,9 @@ static void MDD_ProcessParamFrame(uint32_t id, const uint8_t *data, uint8_t dlc)
     int16_t d_raw = MDD_ReadI16Le(&data[4]);
     int16_t dia_dir_raw = MDD_ReadI16Le(&data[6]);
 
-    double kp = (double)p_raw / 100.0;
-    double ki = (double)i_raw / 100.0;
-    double kd = (double)d_raw / 100.0;
+    double kp = (double)p_raw / 1000.0;
+    double ki = (double)i_raw / 1000.0;
+    double kd = (double)d_raw / 1000.0;
 
     Pid_Init(&g_pid[idx]);
     Pid_setGainWithLimit(&g_pid[idx], kp, ki, kd, 0.01, 100.0);
