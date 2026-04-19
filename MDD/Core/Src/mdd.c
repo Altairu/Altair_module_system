@@ -75,10 +75,10 @@ static int MDD_ClampPwm(double in)
 {
     int v = (int)in;
     if (v > 100) {
-        v = 100;
+        v = 99;
     }
     if (v < -100) {
-        v = -100;
+        v = -99;
     }
     return v;
 }
