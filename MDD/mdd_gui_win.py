@@ -699,4 +699,7 @@ class AltairGUI:
 if __name__ == "__main__":
     root = tk.Tk()
     app = AltairGUI(root)
-    root.mainloop()
+    try:
+        root.mainloop()
+    except KeyboardInterrupt:
+        pass

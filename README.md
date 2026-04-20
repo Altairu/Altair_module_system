@@ -224,6 +224,58 @@ PIN設定
 | 項目 | 値 |
 |---|---|
 | 制御周期 | 20ms (50Hz) |
+| パルス幅範囲 | 0.5ms 〜 2.5ms (一般的なSG90等の仕様に準ずる) |
+| 角度入力範囲 | 0 〜 180度 |
+
+### GUIツール (サーボ動作テスト用)
+
+UbuntuおよびWindows環境で動作する、CAN通信テスト・制御用のGUIツールを用意しています。0x100のIDで各サーボへの角度指令を送信します。
+
+#### 1. Ubuntuでの使用方法 (servo_gui_ubuntu.py)
+
+socketcanを利用して通信を行います。
+
+**【依存環境の準備】**
+```bash
+# tkinterのインストール (Ubuntuの場合)
+sudo apt install python3-tk
+
+# python-canのインストール
+pip install python-can
+```
+
+**【使い方】**
+1. スクリプトを実行します。
+   ```bash
+   cd Servo
+   python3 servo_gui_ubuntu.py
+   ```
+2. **接続**: CANのインターフェース（例：`socketcan`）とチャネル（例：`can0`）、ビットレート（例：`1000000`）を指定して「接続」します。
+
+#### 2. Windowsでの使用方法 (servo_gui_win.py)
+
+PCANやIXXAT、slcanなどのWindows対応CANインターフェースを利用します。
+
+**【依存環境の準備】**
+```powershell
+# python-canのインストール
+pip install python-can
+```
+※ 使用するCANインターフェースに応じたドライバ（PCANドライバ等）をあらかじめWindowsにインストールしておいてください。
+
+**【使い方】**
+1. コマンドプロンプトやPowerShellからスクリプトを実行します。
+   ```powershell
+   cd Servo
+   python servo_gui_win.py
+   ```
+2. **接続**: Interface（例：`pcan`、`slcan`）とChannel（例：`PCAN_USBBUS1`、`COM3`）、ビットレートを指定して「接続」します。
+
+#### 共通の操作 (接続後)
+
+- **目標角度の指定**: CH1〜CH6の各スライダーまたはスピンボックスで0〜180の値を指定します。
+- **単発送信**: 「今すぐ1回送信」ボタンで現在設定されている角度を1回だけ送信します。
+- **連続送信**: 「送信 ON (10ms周期)」にチェックを入れると、10msごとに角度情報が送信され続けます。
 | パルス幅範囲 | 0.5ms から 2.5ms |
 | 目標角度 | 0 から 180 [deg] |
 | 角度-パルス幅変換 | pulse_us = 500 + (2000 * angle_deg / 180) |
