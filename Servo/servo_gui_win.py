@@ -150,13 +150,13 @@ class ServoCanGUI(tk.Tk):
         frm.pack(fill=tk.X, pady=(0, 8))
 
         ttk.Label(frm, text="Interface:").grid(row=0, column=0, sticky=tk.W, padx=4)
-        self.var_iface = tk.StringVar(value="pcan")
+        self.var_iface = tk.StringVar(value="slcan")
         ttk.Combobox(frm, textvariable=self.var_iface, width=14,
-                     values=["pcan", "slcan", "ixxat", "vector", "kvaser", "virtual"]
+                     values=["slcan", "pcan", "ixxat", "vector", "kvaser", "virtual"]
                      ).grid(row=0, column=1, padx=4)
 
         ttk.Label(frm, text="Channel:").grid(row=0, column=2, sticky=tk.W, padx=4)
-        self.var_channel = tk.StringVar(value="PCAN_USBBUS1")
+        self.var_channel = tk.StringVar(value="COM3")
         ttk.Entry(frm, textvariable=self.var_channel, width=10).grid(row=0, column=3, padx=4)
 
         ttk.Label(frm, text="Bitrate:").grid(row=0, column=4, sticky=tk.W, padx=4)

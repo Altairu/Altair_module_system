@@ -349,12 +349,12 @@ class AltairGUI:
         conn_frame.pack(fill=tk.X, padx=10, pady=5)
         
         ttk.Label(conn_frame, text="Interface:").grid(row=0, column=0, sticky=tk.W)
-        self.var_interface = tk.StringVar(value="pcan")
+        self.var_interface = tk.StringVar(value="slcan")
         ttk.Combobox(conn_frame, textvariable=self.var_interface, 
-                     values=("pcan", "ixxat", "vector", "slcan", "virtual"), width=8).grid(row=0, column=1, padx=5)
+                     values=("slcan", "pcan", "ixxat", "vector", "virtual"), width=8).grid(row=0, column=1, padx=5)
         
         ttk.Label(conn_frame, text="Channel:").grid(row=0, column=2, sticky=tk.W, padx=(10, 0))
-        self.var_channel = tk.StringVar(value="PCAN_USBBUS1")
+        self.var_channel = tk.StringVar(value="COM3")
         ttk.Entry(conn_frame, textvariable=self.var_channel).grid(row=0, column=3, sticky=tk.EW, padx=5)
         
         ttk.Label(conn_frame, text="Bitrate (bps):").grid(row=0, column=4, sticky=tk.W, padx=(10, 0))
