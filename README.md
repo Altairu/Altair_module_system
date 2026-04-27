@@ -453,3 +453,49 @@ pip install python-can pyserial
 - **単発送信**: 「今すぐ1回送信」ボタンで現在設定されている状態を1回だけ送信します。
 - **連続送信**: 「送信 ON (100ms周期)」にチェックを入れると、100msごとに状態が送信され続けます。
 
+---
+
+## 統合GUIツール (Altair Unified GUI)
+
+MDD、Servo、Solenoid Valve の3つのモジュールを1つの画面で切り替えて操作できる統合GUIツールです。一度のCAN接続操作で、すべてのモジュールの送信テストを一括して行えます。
+
+### 特徴
+- **タブ切り替え**: 「MDD」「Servo」「Solenoid Valve」の各設定画面をタブでシームレスに切り替え。
+- **独立周期送信**: 
+  - MDD, Servo : 10ms周期で送信可能（独立してON/OFF可能）
+  - Solenoid Valve : 100ms周期で送信可能（独立してON/OFF可能）
+- **共有ログ**: 全モジュールの送受信ログやステータスを画面下部のテキストエリアで一元管理できます。
+
+### 1. Ubuntuでの使用方法 (Altair_module_system_Ubuntu.py)
+
+socketcanを利用して通信を行います（デフォルト設定 `socketcan` / `can0`）。
+
+**【依存環境の準備】**
+```bash
+sudo apt install python3-tk
+pip install python-can
+```
+
+**【使い方】**
+1. リポジトリのルートディレクトリでスクリプトを実行します。
+   ```bash
+   python3 Altair_module_system_Ubuntu.py
+   ```
+2. **接続**: CANインターフェース、チャネル、ビットレート（例：`1000000`）を指定し「接続」します。
+
+### 2. Windowsでの使用方法 (Altair_module_system_win.py)
+
+PCANやslcan等のWindows対応インターフェースを利用します（デフォルト設定 `slcan` / `COM3`）。
+
+**【依存環境の準備】**
+```powershell
+pip install python-can pyserial
+```
+
+**【使い方】**
+1. コマンドプロンプトまたはPowerShellからスクリプトを実行します。
+   ```powershell
+   python Altair_module_system_win.py
+   ```
+2. **接続**: Interface（例：`slcan`, `pcan`）とChannel（例：`COM3`, `PCAN_USBBUS1`）、ビットレートを指定し「接続」します。
+
