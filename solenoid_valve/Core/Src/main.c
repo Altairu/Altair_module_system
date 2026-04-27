@@ -1,44 +1,23 @@
 /* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include "Altair_library_for_CubeIDE/altair.h"
+#include "solenoid_valve.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define CAN_SOLENOID_CMD_STD_ID 0x300U
-#define CAN_RX_TIMEOUT_MS 200U
-#define SOLENOID_COUNT 12U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -49,8 +28,6 @@ USART_HandleTypeDef husart2;
 USART_HandleTypeDef husart3;
 
 /* USER CODE BEGIN PV */
-static volatile uint16_t g_solenoid_state = 0U;
-static volatile uint32_t g_last_can_rx_tick = 0U;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -61,47 +38,10 @@ static void MX_CAN2_Init(void);
 static void MX_USART2_Init(void);
 static void MX_USART3_Init(void);
 /* USER CODE BEGIN PFP */
-static void Solenoid_ProcessCanCommand(void);
-static void Solenoid_ApplyState(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-static void Solenoid_ProcessCanCommand(void)
-{
-  CanRxPacket rx_packet;
-  if (Can_GetRxPacket(&rx_packet) == HAL_OK)
-  {
-    if (rx_packet.header.IDE == CAN_ID_STD && rx_packet.header.StdId == CAN_SOLENOID_CMD_STD_ID)
-    {
-      if (rx_packet.header.DLC >= 2)
-      {
-        g_solenoid_state = (uint16_t)((rx_packet.data[1] << 8) | rx_packet.data[0]);
-        g_last_can_rx_tick = HAL_GetTick();
-        HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
-      }
-    }
-  }
-}
-
-static void Solenoid_ApplyState(void)
-{
-  uint16_t state = g_solenoid_state;
-
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_0, (state & (1 << 0)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1, (state & (1 << 1)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, (state & (1 << 2)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_7, (state & (1 << 3)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_8, (state & (1 << 4)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_9, (state & (1 << 5)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_15, (state & (1 << 6)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_3, (state & (1 << 7)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_6, (state & (1 << 8)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_7, (state & (1 << 9)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8, (state & (1 << 10)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_9, (state & (1 << 11)) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-}
 /* USER CODE END 0 */
 
 /**
@@ -112,7 +52,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -121,14 +60,12 @@ int main(void)
   HAL_Init();
 
   /* USER CODE BEGIN Init */
-
   /* USER CODE END Init */
 
   /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -138,28 +75,14 @@ int main(void)
   MX_USART2_Init();
   MX_USART3_Init();
   /* USER CODE BEGIN 2 */
-  CanInitConfig can1_config = Can_DefaultInitConfig(&hcan1);
-  if (Can_Init(&hcan1, &can1_config) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  
-  Solenoid_ApplyState();
+  Solenoid_Init(&hcan1);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    Solenoid_ProcessCanCommand();
-    Solenoid_ApplyState();
-
-    if ((HAL_GetTick() - g_last_can_rx_tick) > CAN_RX_TIMEOUT_MS)
-    {
-      HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
-      /* タイムアウト時に電磁弁をすべてOFFにする場合は以下のコメントアウトを外す */
-      // g_solenoid_state = 0;
-    }
+    Solenoid_Update();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -223,11 +146,9 @@ static void MX_CAN1_Init(void)
 {
 
   /* USER CODE BEGIN CAN1_Init 0 */
-
   /* USER CODE END CAN1_Init 0 */
 
   /* USER CODE BEGIN CAN1_Init 1 */
-
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
   hcan1.Init.Prescaler = 16;
@@ -246,7 +167,6 @@ static void MX_CAN1_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN1_Init 2 */
-
   /* USER CODE END CAN1_Init 2 */
 
 }
@@ -260,11 +180,9 @@ static void MX_CAN2_Init(void)
 {
 
   /* USER CODE BEGIN CAN2_Init 0 */
-
   /* USER CODE END CAN2_Init 0 */
 
   /* USER CODE BEGIN CAN2_Init 1 */
-
   /* USER CODE END CAN2_Init 1 */
   hcan2.Instance = CAN2;
   hcan2.Init.Prescaler = 3;
@@ -283,7 +201,6 @@ static void MX_CAN2_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN CAN2_Init 2 */
-
   /* USER CODE END CAN2_Init 2 */
 
 }
@@ -297,11 +214,9 @@ static void MX_USART2_Init(void)
 {
 
   /* USER CODE BEGIN USART2_Init 0 */
-
   /* USER CODE END USART2_Init 0 */
 
   /* USER CODE BEGIN USART2_Init 1 */
-
   /* USER CODE END USART2_Init 1 */
   husart2.Instance = USART2;
   husart2.Init.BaudRate = 115200;
@@ -317,7 +232,6 @@ static void MX_USART2_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
-
   /* USER CODE END USART2_Init 2 */
 
 }
@@ -331,11 +245,9 @@ static void MX_USART3_Init(void)
 {
 
   /* USER CODE BEGIN USART3_Init 0 */
-
   /* USER CODE END USART3_Init 0 */
 
   /* USER CODE BEGIN USART3_Init 1 */
-
   /* USER CODE END USART3_Init 1 */
   husart3.Instance = USART3;
   husart3.Init.BaudRate = 115200;
@@ -351,7 +263,6 @@ static void MX_USART3_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN USART3_Init 2 */
-
   /* USER CODE END USART3_Init 2 */
 
 }
@@ -365,7 +276,6 @@ static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
-
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
@@ -406,12 +316,10 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
-
 /* USER CODE END 4 */
 
 /**
@@ -421,11 +329,6 @@ static void MX_GPIO_Init(void)
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
-  __disable_irq();
-  while (1)
-  {
-  }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
@@ -439,8 +342,6 @@ void Error_Handler(void)
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
