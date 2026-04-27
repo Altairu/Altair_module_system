@@ -338,3 +338,118 @@ pip install python-can
    ```
 2. **接続**: 使用するインターフェース（例：`can0`）、ビットレート（例：`1000000`）を指定し、CAN通信の接続を行います。
 3. **操作**: GUI上のスライダーまたはエントリーでサーボ目標角度（0〜180度）を設定します。「定期送信」をオンにすると内部で 10ms 周期で自動的に `CAN ID: 0x100` または設定した標準IDとして送信されます。
+
+## Solenoid Valve
+
+回路名: ALTAIR_SOLENOID_VALVE_MODULE
+
+電磁弁(ソレノイドバルブ)制御用モジュール。ROS2 PC から USB to CAN を介してON/OFF指令を送信し、STM32 が 最大12個の電磁弁を駆動します。
+
+### 概要
+
+| 項目 | 内容 |
+|---|---|
+| MCUプロジェクト | solenoid_valve |
+| 対象MCU | STM32F446 |
+| 出力数 | 12ch (GPIO) |
+| 使用CAN | CAN1 (受信) |
+| CAN ID | 0x300 (標準ID) |
+| 状態LED | PA5 (LED_Pin) |
+
+### 出力ピン割り当て
+
+| 電磁弁 | ピン |
+|---|---|
+| Valve 1 | PA0 |
+| Valve 2 | PA1 |
+| Valve 3 | PA6 |
+| Valve 4 | PA7 |
+| Valve 5 | PA8 |
+| Valve 6 | PA9 |
+| Valve 7 | PA15 |
+| Valve 8 | PB3 |
+| Valve 9 | PB6 |
+| Valve 10 | PB7 |
+| Valve 11 | PB8 |
+| Valve 12 | PB9 |
+
+### CAN受信仕様 (ROS2 -> MCU)
+
+| 項目 | 値 |
+|---|---|
+| 使用CAN | CAN1 |
+| CAN ID | 0x300 (標準ID) |
+| DLC | 2 以上 |
+
+Payload (2B)
+12個の電磁弁のON/OFF（1でON, 0でOFF）をビットで割り当てています。
+
+- **Byte0**: Valve 1〜8
+  - bit0: Valve 1 (PA0)
+  - bit1: Valve 2 (PA1)
+  - bit2: Valve 3 (PA6)
+  - bit3: Valve 4 (PA7)
+  - bit4: Valve 5 (PA8)
+  - bit5: Valve 6 (PA9)
+  - bit6: Valve 7 (PA15)
+  - bit7: Valve 8 (PB3)
+- **Byte1**: Valve 9〜12
+  - bit0: Valve 9 (PB6)
+  - bit1: Valve 10 (PB7)
+  - bit2: Valve 11 (PB8)
+  - bit3: Valve 12 (PB9)
+  - bit4-7: 未使用 (無視されます)
+
+### 通信時の動作
+
+- 0x300のCANフレーム受信時: 指定のビット状態に従ってGPIO出力をHIG/LOWに設定し、LED(PA5) をON。
+- 200ms 以上CAN無受信時: LED(PA5) をOFF（現在の仕様ではピン出力状態は保持されますが、必要に応じて無受信時に全OFFするようコードレベルで変更可能です）。
+
+### GUIツール (電磁弁動作テスト用)
+
+UbuntuおよびWindows環境で動作する、CAN通信テスト・制御用のGUIツールを用意しています。0x300のIDで各電磁弁への指令を送信します。
+
+#### 1. Ubuntuでの使用方法 (solenoid_valve_gui_ubuntu.py)
+
+socketcanを利用して通信を行います。
+
+**【依存環境の準備】**
+```bash
+# tkinterのインストール (Ubuntuの場合)
+sudo apt install python3-tk
+
+# python-canのインストール
+pip install python-can
+```
+
+**【使い方】**
+1. スクリプトを実行します。
+   ```bash
+   cd solenoid_valve
+   python3 solenoid_valve_gui_ubuntu.py
+   ```
+2. **接続**: CANのインターフェース（例：`socketcan`）とチャネル（例：`can0`）、ビットレート（例：`1000000`）を指定して「接続」します。
+
+#### 2. Windowsでの使用方法 (solenoid_valve_gui_win.py)
+
+PCANやslcanなどのWindows対応CANインターフェースを利用します。
+
+**【依存環境の準備】**
+```powershell
+pip install python-can pyserial
+```
+
+**【使い方】**
+1. コマンドプロンプトやPowerShellからスクリプトを実行します。
+   ```powershell
+   cd solenoid_valve
+   python solenoid_valve_gui_win.py
+   ```
+2. **接続**: Interface（例：`slcan`）とChannel（例：`COM3`）、ビットレートを指定して「接続」します。
+
+#### 共通の操作 (接続後)
+
+- **電磁弁の指定**: Valve 1〜12 の各チェックボックスで ON/OFF を指定します。
+- **単発送信**: 「今すぐ1回送信」ボタンで現在設定されている状態を1回だけ送信します。
+- **連続送信**: 「送信 ON (100ms周期)」にチェックを入れると、100msごとに状態が送信され続けます。
+
