@@ -347,6 +347,8 @@ pip install python-can
 
 ### 概要
 
+![alt text](images\sole.png)
+
 | 項目 | 内容 |
 |---|---|
 | MCUプロジェクト | solenoid_valve |

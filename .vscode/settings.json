@@ -1,0 +1,7 @@
+{
+    "cmake.cmakePath": "cube-cmake",
+    "cmake.configureArgs": [
+        "-DCMAKE_COMMAND=cube-cmake"
+    ],
+    "cmake.sourceDirectory": "C:/Users/106no/Documents/GitHub/Altair_module_system/solenoid_valve/cmake/stm32cubemx"
+}

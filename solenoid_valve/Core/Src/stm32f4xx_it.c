@@ -57,7 +57,7 @@
 /* External variables --------------------------------------------------------*/
 extern CAN_HandleTypeDef hcan1;
 /* USER CODE BEGIN EV */
-
+extern CAN_HandleTypeDef hcan2;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -213,5 +213,11 @@ void CAN1_RX0_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
-
+/**
+  * @brief This function handles CAN2 RX0 interrupt.
+  */
+void CAN2_RX0_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan2);
+}
 /* USER CODE END 1 */
