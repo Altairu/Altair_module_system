@@ -28,6 +28,9 @@ CAN_ID_PARAM_BASE = 0x200  # Motor1-4: 0x200-0x203
 CAN_ID_MODE       = 0x210  # 4B モード設定
 CAN_ID_TARGET     = 0x220  # 8B 目標値設定
 CAN_ID_STATUS     = 0x230  # 6B ステータス返信
+# エンコーダー送信 ID (スロット規則: DEG = baseId + 0x40, RPS = baseId + 0x50)
+CAN_ID_DEG        = 0x240  # 8B エンコーダ角度 (int16_t×4, 0.1度単位)
+CAN_ID_RPS        = 0x250  # 8B エンコーダ回転速度 (int16_t×4, 0.01rps単位)
 
 TX_INTERVAL_10MS = 0.010
 RX_TIMEOUT_FAST = 0.005
@@ -78,6 +81,10 @@ class CANBackend:
         self._last_status_signature = None
         self._last_target_log_time = 0.0
         self._last_target_signature = None
+
+        # エンコーダー受信データ (4モータ分)
+        self.enc_deg = [0.0, 0.0, 0.0, 0.0]  # 角度 [度]
+        self.enc_rps = [0.0, 0.0, 0.0, 0.0]  # 回転速度 [rps]
 
     # ── セッター ────────────────────────────────
     def set_target(self, motor_index: int, val: int):
@@ -273,10 +280,38 @@ class CANBackend:
                     while msg is not None:
                         if msg.arbitration_id == CAN_ID_STATUS:
                             self._parse_status(msg.data)
+                        elif msg.arbitration_id == CAN_ID_DEG:
+                            self._parse_encoder_deg(msg.data)
+                        elif msg.arbitration_id == CAN_ID_RPS:
+                            self._parse_encoder_rps(msg.data)
                         # 受信キューに溜まっている分を連続で処理。
                         msg = self.bus.recv(timeout=0.0)
                 except Exception:
                     pass
+
+    @staticmethod
+    def _decode_i16_le(data, offset):
+        """2バイトのリトルエンディアンint16_tを読み取る"""
+        raw = data[offset] | (data[offset + 1] << 8)
+        if raw >= 0x8000:
+            raw -= 0x10000
+        return raw
+
+    def _parse_encoder_deg(self, data):
+        """エンコーダ角度受信 (0x240): int16_t×4, 0.1度単位"""
+        if len(data) < 8:
+            return
+        for i in range(4):
+            raw = self._decode_i16_le(data, i * 2)
+            self.enc_deg[i] = raw / 10.0
+
+    def _parse_encoder_rps(self, data):
+        """エンコーダ回転速度受信 (0x250): int16_t×4, 0.01rps単位"""
+        if len(data) < 8:
+            return
+        for i in range(4):
+            raw = self._decode_i16_le(data, i * 2)
+            self.enc_rps[i] = raw / 100.0
 
     def _parse_status(self, data):
         """0x230: 4x Limit SW + Error + AppMode"""
@@ -456,6 +491,27 @@ class AltairGUI:
                                     command=self._on_tx_toggle, state=tk.DISABLED)
         self.cb_tx.pack(side=tk.LEFT, padx=(16, 0))
 
+        # ─── エンコーダー表示パネル ─────────────────────
+        enc_frame = ttk.LabelFrame(self.root, text="エンコーダー値 (常時受信 0x240/0x250)", padding=5)
+        enc_frame.pack(fill=tk.X, padx=10, pady=2)
+
+        enc_inner = ttk.Frame(enc_frame)
+        enc_inner.pack(fill=tk.X)
+
+        self.enc_deg_vars = [tk.StringVar(value="---") for _ in range(4)]
+        self.enc_rps_vars = [tk.StringVar(value="---") for _ in range(4)]
+
+        for i in range(4):
+            col_frame = ttk.Frame(enc_inner)
+            col_frame.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
+            ttk.Label(col_frame, text=f"M{i}", font=("Arial", 9, "bold")).pack()
+            ttk.Label(col_frame, text="角度:").pack(side=tk.LEFT)
+            ttk.Label(col_frame, textvariable=self.enc_deg_vars[i], width=8, anchor=tk.E).pack(side=tk.LEFT)
+            ttk.Label(col_frame, text="度").pack(side=tk.LEFT)
+            ttk.Label(col_frame, text=" RPS:").pack(side=tk.LEFT)
+            ttk.Label(col_frame, textvariable=self.enc_rps_vars[i], width=7, anchor=tk.E).pack(side=tk.LEFT)
+            ttk.Label(col_frame, text="rps").pack(side=tk.LEFT)
+
         # ─── ログ ────────────────────────────
         log_frame = ttk.LabelFrame(self.root, text="ログ", padding=5)
         log_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
@@ -592,6 +648,11 @@ class AltairGUI:
 
             if self.var_tx_enabled.get() != self.backend.tx_enabled:
                 self.var_tx_enabled.set(self.backend.tx_enabled)
+
+            # エンコーダー表示を更新
+            for i in range(4):
+                self.enc_deg_vars[i].set(f"{self.backend.enc_deg[i]:+.1f}")
+                self.enc_rps_vars[i].set(f"{self.backend.enc_rps[i]:+.2f}")
         else:
             self.var_remote_state.set("未接続")
         

@@ -216,6 +216,36 @@ class AdvancedCANBackend:
                         if self.auto_trigger_engine_enabled:
                             self._evaluate_triggers()
 
+                # エンコーダー角度受信 (baseId + 0x40)
+                elif m["type"] == "mdd" and msg.arbitration_id == (m["baseId"] + 0x40):
+                    if len(msg.data) >= 8:
+                        state = m.setdefault("state", {})
+                        enc_deg = state.setdefault("enc_deg", [0.0, 0.0, 0.0, 0.0])
+                        for i in range(4):
+                            raw = msg.data[i*2] | (msg.data[i*2+1] << 8)
+                            if raw >= 0x8000:
+                                raw -= 0x10000
+                            enc_deg[i] = raw / 10.0
+                        state["enc_deg"] = enc_deg
+                        # エンコーダートリガー評価
+                        if self.auto_trigger_engine_enabled:
+                            self._evaluate_triggers()
+
+                # エンコーダー回転速度受信 (baseId + 0x50)
+                elif m["type"] == "mdd" and msg.arbitration_id == (m["baseId"] + 0x50):
+                    if len(msg.data) >= 8:
+                        state = m.setdefault("state", {})
+                        enc_rps = state.setdefault("enc_rps", [0.0, 0.0, 0.0, 0.0])
+                        for i in range(4):
+                            raw = msg.data[i*2] | (msg.data[i*2+1] << 8)
+                            if raw >= 0x8000:
+                                raw -= 0x10000
+                            enc_rps[i] = raw / 100.0
+                        state["enc_rps"] = enc_rps
+                        # エンコーダートリガー評価
+                        if self.auto_trigger_engine_enabled:
+                            self._evaluate_triggers()
+
     def _evaluate_triggers(self):
         # 簡易的なトリガー評価（LOCK内から呼ばれる）
         for rule in self.automation_rules:
@@ -232,12 +262,47 @@ class AdvancedCANBackend:
                 continue
             
             try:
-                sw_idx = int(c_var.replace("sw", "")) - 1
-                current_val = c_mod["state"]["sw"][sw_idx]
-                if current_val == int(c_val):
-                    self._execute_actions(rule["actions"])
-            except:
+                state = c_mod.get("state", {})
+                current_val = None
+
+                if c_var.startswith("sw"):
+                    # リミットスイッチの値
+                    sw_idx = int(c_var.replace("sw", "")) - 1
+                    current_val = state.get("sw", [0,0,0,0])[sw_idx]
+                    if current_val == int(c_val):
+                        self._execute_actions(rule["actions"])
+
+                elif c_var.startswith("enc_deg"):
+                    # エンコーダー角度の値 (比較値は float)
+                    motor_idx = int(c_var.replace("enc_deg", "")) - 1
+                    current_val = state.get("enc_deg", [0.0]*4)[motor_idx]
+                    op = rule.get("cond_op", ">=")
+                    threshold = float(c_val)
+                    if self._compare(current_val, op, threshold):
+                        self._execute_actions(rule["actions"])
+
+                elif c_var.startswith("enc_rps"):
+                    # エンコーダー回転速度の値 (比較値は float)
+                    motor_idx = int(c_var.replace("enc_rps", "")) - 1
+                    current_val = state.get("enc_rps", [0.0]*4)[motor_idx]
+                    op = rule.get("cond_op", ">=")
+                    threshold = float(c_val)
+                    if self._compare(current_val, op, threshold):
+                        self._execute_actions(rule["actions"])
+
+            except Exception:
                 pass
+
+    @staticmethod
+    def _compare(val, op, threshold):
+        """比較演算子: ==, !=, >=, <=, >, <"""
+        if op == "==":  return val == threshold
+        if op == "!=":  return val != threshold
+        if op == ">=":  return val >= threshold
+        if op == "<=":  return val <= threshold
+        if op == ">":   return val > threshold
+        if op == "<":   return val < threshold
+        return False
 
     def run_macro(self, rule):
         with self.lock:
@@ -572,19 +637,30 @@ class AltairAdvancedGUI:
                 cb.pack(side=tk.LEFT, padx=5)
                 cb.bind("<<ComboboxSelected>>", _set_c_mod)
                 
-                ttk.Label(c_f, text="SW:").pack(side=tk.LEFT)
+                ttk.Label(c_f, text="変数:").pack(side=tk.LEFT)
                 v_var = tk.StringVar(value=rule.get("cond_var"))
                 def _set_c_var(e, r=rule, v=v_var): r["cond_var"] = v.get()
-                cb_var = ttk.Combobox(c_f, textvariable=v_var, values=["sw1","sw2","sw3","sw4"], width=5)
+                # SW + エンコーダー値の選択肢を追加
+                cond_var_opts = ["sw1","sw2","sw3","sw4",
+                                 "enc_deg1","enc_deg2","enc_deg3","enc_deg4",
+                                 "enc_rps1","enc_rps2","enc_rps3","enc_rps4"]
+                cb_var = ttk.Combobox(c_f, textvariable=v_var, values=cond_var_opts, width=10)
                 cb_var.pack(side=tk.LEFT, padx=5)
                 cb_var.bind("<<ComboboxSelected>>", _set_c_var)
                 
-                ttk.Label(c_f, text="==").pack(side=tk.LEFT)
+                ttk.Label(c_f, text="演算:").pack(side=tk.LEFT)
+                v_op = tk.StringVar(value=rule.get("cond_op", ">="))
+                def _set_c_op(e, r=rule, v=v_op): r["cond_op"] = v.get()
+                cb_op = ttk.Combobox(c_f, textvariable=v_op, values=[">=", "<=", "==", "!=", ">", "<"], width=4)
+                cb_op.pack(side=tk.LEFT, padx=3)
+                cb_op.bind("<<ComboboxSelected>>", _set_c_op)
+                
+                ttk.Label(c_f, text="値:").pack(side=tk.LEFT)
                 v_val = tk.StringVar(value=str(rule.get("cond_val")))
-                def _set_c_val(e, r=rule, v=v_val): r["cond_val"] = int(v.get())
-                cb_val = ttk.Combobox(c_f, textvariable=v_val, values=["1", "0"], width=3)
-                cb_val.pack(side=tk.LEFT, padx=5)
-                cb_val.bind("<<ComboboxSelected>>", _set_c_val)
+                def _set_c_val(e, r=rule, v=v_val): r["cond_val"] = v.get()
+                ent_val = ttk.Entry(c_f, textvariable=v_val, width=8)
+                ent_val.pack(side=tk.LEFT, padx=5)
+                ent_val.bind("<Return>", _set_c_val)
 
             # Actions overview (JSON text for simplicity)
             ttk.Label(f, text=f"Actions: {json.dumps(rule['actions'])}").pack(anchor=tk.W, pady=5)
@@ -658,7 +734,10 @@ class AltairAdvancedGUI:
                 state = m.get("state", {})
                 sw_str = state.get("sw", [0,0,0,0])
                 mode_str = "CONTROL" if state.get("appMode") == 1 else "PARAM"
-                ui_obj["status_label"].config(text=f"State: {mode_str} | SW: {sw_str} | Err: {state.get('err',0)}")
+                enc_deg = state.get("enc_deg", [0.0]*4)
+                enc_rps = state.get("enc_rps", [0.0]*4)
+                enc_str = " | ".join([f"M{i+1}: {enc_deg[i]:+.1f}° {enc_rps[i]:+.2f}rps" for i in range(4)])
+                ui_obj["status_label"].config(text=f"State: {mode_str} | SW: {sw_str} | Err: {state.get('err',0)}\nENC: {enc_str}")
                 
         self.root.after(200, self._poll_ui_update)
 
