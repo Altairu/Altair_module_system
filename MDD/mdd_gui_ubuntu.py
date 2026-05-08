@@ -452,7 +452,7 @@ class AltairGUI:
             
             ttk.Label(p_frame, text=f"M{motor_idx}", width=3).pack(side=tk.LEFT)
             ttk.Label(p_frame, text="P:").pack(side=tk.LEFT, padx=5)
-            var_p = tk.StringVar(value="80")
+            var_p = tk.StringVar(value="10")
             ttk.Entry(p_frame, textvariable=var_p, width=6).pack(side=tk.LEFT)
             
             ttk.Label(p_frame, text="I:").pack(side=tk.LEFT, padx=5)
@@ -460,7 +460,7 @@ class AltairGUI:
             ttk.Entry(p_frame, textvariable=var_i, width=6).pack(side=tk.LEFT)
             
             ttk.Label(p_frame, text="D:").pack(side=tk.LEFT, padx=5)
-            var_d = tk.StringVar(value="2")
+            var_d = tk.StringVar(value="0")
             ttk.Entry(p_frame, textvariable=var_d, width=6).pack(side=tk.LEFT)
             
             ttk.Label(p_frame, text="Wheel(mm):").pack(side=tk.LEFT, padx=5)

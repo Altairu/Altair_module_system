@@ -492,11 +492,11 @@ class AltairUnifiedGUI:
             
             ttk.Label(f, text=f"M{i}", width=3).pack(side=tk.LEFT)
             ttk.Label(f, text="P:").pack(side=tk.LEFT, padx=2)
-            vp = tk.StringVar(value="80"); ttk.Entry(f, textvariable=vp, width=6).pack(side=tk.LEFT)
+            vp = tk.StringVar(value="10"); ttk.Entry(f, textvariable=vp, width=6).pack(side=tk.LEFT)
             ttk.Label(f, text="I:").pack(side=tk.LEFT, padx=2)
             vi = tk.StringVar(value="0"); ttk.Entry(f, textvariable=vi, width=6).pack(side=tk.LEFT)
             ttk.Label(f, text="D:").pack(side=tk.LEFT, padx=2)
-            vd = tk.StringVar(value="2"); ttk.Entry(f, textvariable=vd, width=6).pack(side=tk.LEFT)
+            vd = tk.StringVar(value="0"); ttk.Entry(f, textvariable=vd, width=6).pack(side=tk.LEFT)
             ttk.Label(f, text="Wheel(mm):").pack(side=tk.LEFT, padx=2)
             vw = tk.StringVar(value="65"); ttk.Entry(f, textvariable=vw, width=6).pack(side=tk.LEFT)
             ttk.Label(f, text="Dir:").pack(side=tk.LEFT, padx=2)

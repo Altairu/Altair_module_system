@@ -470,7 +470,7 @@ class AltairAdvancedGUI:
                 b = int(var_id.get(), 16)
                 m = {"id": f"mod_{int(time.time()*1000)}", "type": t, "name": n, "baseId": b, "tx_enabled": False}
                 if t == "mdd":
-                    m["motors"] = [{"target":0, "mode":0, "p":80, "i":0, "d":2, "wheel":65, "dir":1} for _ in range(4)]
+                    m["motors"] = [{"target":0, "mode":0, "p":10, "i":0, "d":0, "wheel":65, "dir":1} for _ in range(4)]
                     m["state"] = {"appMode":0, "paramSendRequested":False, "sw":[0,0,0,0], "err":0}
                 elif t == "servo":
                     m["ch"] = [90]*6
