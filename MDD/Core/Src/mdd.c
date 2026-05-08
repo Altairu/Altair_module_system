@@ -210,6 +210,8 @@ static void MDD_ProcessModeFrame(const uint8_t *data, uint8_t dlc) {
     return;
   }
 
+  uint8_t mode_changed = (g_mode == MDD_MODE_PARAM_SET);
+
   for (int i = 0; i < MOTOR_COUNT; i++) {
     if (data[i] == 0U) {
       g_ctrl_mode[i] = MDD_CTRL_SPEED;
@@ -219,6 +221,31 @@ static void MDD_ProcessModeFrame(const uint8_t *data, uint8_t dlc) {
       g_ctrl_mode[i] = MDD_CTRL_POSITION;
     } else {
       g_ctrl_mode[i] = MDD_CTRL_SPEED;
+    }
+  }
+
+  if (mode_changed) {
+    for (int i = 0; i < MOTOR_COUNT; i++) {
+      /* エンコーダのハードウェアタイマー値をリセット */
+      Encoder_Reset(&g_encoder[i]);
+      
+      /* エンコーダの蓄積データと計算用変数をリセット */
+      g_encoder[i].limit = 0;
+      g_encoder[i].before_rot = 0.0;
+      g_encoder[i].before_deg = 0.0;
+      
+      g_encoder_data[i].count = 0;
+      g_encoder_data[i].rot = 0.0;
+      g_encoder_data[i].deg = 0.0;
+      g_encoder_data[i].distance = 0.0;
+      g_encoder_data[i].velocity = 0.0;
+      g_encoder_data[i].rps = 0.0;
+
+      /* PIDの内部状態(積分項や過去の偏差)をリセット */
+      Pid_reset(&g_pid[i]);
+
+      /* 安全のため目標値も0にリセットし、切り替え直後の急発進を防ぐ */
+      g_target_val[i] = 0.0;
     }
   }
 
@@ -282,6 +309,8 @@ static void MDD_RunControlStep(void) {
   if (g_mode != MDD_MODE_CONTROL) {
     for (int i = 0; i < MOTOR_COUNT; i++) {
       MotorDriver_setSpeed(&g_motor[i], 0);
+      /* PARAM MODE中はPIDの内部状態(I項など)をリセットして、不要な出力を防ぐ */
+      Pid_reset(&g_pid[i]);
     }
     return;
   }
