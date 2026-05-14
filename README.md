@@ -7,16 +7,45 @@ ROS2 PC から USB-to-CAN アダプタを介し、**モータ（MDD）・サー�
 
 ## 目次
 
-- [システム全体像](#システム全体像)
-- [CAN ID マップ](#can-id-マップ)
-- [MDD (モータドライバードライバ)](#mdd-モータドライバードライバ)
-- [Servo (サーボモータ)](#servo-サーボモータ)
-- [Solenoid Valve (電磁弁)](#solenoid-valve-電磁弁)
-- [GUIツール一覧](#guiツール一覧)
-  - [モジュール個別 GUI (Python)](#1-モジュール個別-gui-python)
-  - [統合 GUI (Python)](#2-統合-gui-altair-unified-gui--python)
-  - [Altair Web Controller (ブラウザ)](#3-altair-web-controller-ブラウザ)
-- [ライセンス](#ライセンス)
+- [Altair Module System](#altair-module-system)
+  - [目次](#目次)
+  - [システム全体像](#システム全体像)
+  - [CAN ID マップ](#can-id-マップ)
+  - [MDD (モータドライバードライバ)](#mdd-モータドライバードライバ)
+    - [概要](#概要)
+    - [ピン割り当て](#ピン割り当て)
+    - [メインループ処理フロー](#メインループ処理フロー)
+    - [CAN 通信仕様 (すべて CAN1, 1 Mbps)](#can-通信仕様-すべて-can1-1-mbps)
+      - [A. パラメータ設定 (PC → MDD)](#a-パラメータ設定-pc--mdd)
+      - [B. 目標値指令 (PC → MDD)](#b-目標値指令-pc--mdd)
+      - [C. ステータス返信 (MDD → PC)](#c-ステータス返信-mdd--pc)
+    - [エラーコード](#エラーコード)
+      - [D. エンコーダデータ送信 (MDD → PC)](#d-エンコーダデータ送信-mdd--pc)
+  - [Servo (サーボモータ)](#servo-サーボモータ)
+    - [概要](#概要-1)
+    - [サーボ出力ピン](#サーボ出力ピン)
+    - [PWM 制御仕様](#pwm-制御仕様)
+    - [CAN 受信仕様 (PC → MCU)](#can-受信仕様-pc--mcu)
+    - [通信時の動作](#通信時の動作)
+  - [Solenoid Valve (電磁弁)](#solenoid-valve-電磁弁)
+    - [概要](#概要-2)
+    - [出力ピン割り当て](#出力ピン割り当て)
+    - [CAN 受信仕様 (PC → MCU)](#can-受信仕様-pc--mcu-1)
+    - [通信時の動作](#通信時の動作-1)
+  - [GUIツール一覧](#guiツール一覧)
+    - [1. モジュール個別 GUI (Python)](#1-モジュール個別-gui-python)
+      - [依存環境の準備](#依存環境の準備)
+      - [使い方](#使い方)
+    - [2. 統合 GUI (Altair Unified GUI — Python)](#2-統合-gui-altair-unified-gui--python)
+      - [特徴](#特徴)
+      - [使い方](#使い方-1)
+    - [3. Altair Web Controller (ブラウザ)](#3-altair-web-controller-ブラウザ)
+      - [アクセス URL](#アクセス-url)
+      - [対応環境](#対応環境)
+      - [主な機能](#主な機能)
+      - [UI の特徴](#ui-の特徴)
+      - [使い方](#使い方-2)
+  - [ライセンス](#ライセンス)
 
 ---
 
@@ -44,7 +73,9 @@ ROS2 PC から USB-to-CAN アダプタを介し、**モータ（MDD）・サー�
 | `0x200`–`0x203` | PC → MCU | MDD | Motor1-4 パラメータ設定 (各 8B) |
 | `0x210` | PC → MCU | MDD | 4ch モード設定 (4B) |
 | `0x220` | PC → MCU | MDD | 4ch 目標値指令 (8B) |
-| `0x230` | MCU → PC | MDD | ステータス返信 (6B) |
+| `0x230` | MCU → PC | MDD | ステータス返信 (8B) |
+| `0x240` | MCU → PC | MDD | 4ch エンコーダ角度 (8B) |
+| `0x250` | MCU → PC | MDD | 4ch エンコーダ回転速度 (8B) |
 | `0x300` | PC → MCU | Solenoid Valve | 12ch 電磁弁 ON/OFF (2B) |
 
 > **Note**: 各 CAN ID はモジュール側のファームウェアにハードコードされていますが、GUIツール（統合GUI・Web Controller）では Base CAN ID を変更可能です。複数の同種モジュールを使用する場合は、ファームウェア側の CAN ID も合わせて変更してください。
@@ -135,13 +166,17 @@ Byte6-7 の解釈:
 
 #### C. ステータス返信 (MDD → PC)
 
-**CAN ID `0x230`**: Payload 6B（常時送信）
+**CAN ID `0x230`**: Payload 8B（常時送信、10ms 周期）
 
 | バイト | 内容 |
 |---|---|
-| Byte0–3 | Limit SW1–SW4 |
+| Byte0 | Limit SW1 |
+| Byte1 | Limit SW2 |
+| Byte2 | Limit SW3 |
+| Byte3 | Limit SW4 |
 | Byte4 | エラーコード |
 | Byte5 | システム状態 (0=パラメータ設定, 1=制御実行) |
+| Byte6–7 | 未使用 (0固定) |
 
 ### エラーコード
 
@@ -153,6 +188,32 @@ Byte6-7 の解釈:
 | `0x04` | CAN_TX_FAIL | フィードバック送信失敗 |
 
 > エラーコードはビットフラグで、同時に複数立つ場合があります。
+
+#### D. エンコーダデータ送信 (MDD → PC)
+
+モード（パラメータ設定/制御実行）に関わらず常時送信されます（10ms 周期）。
+
+**CAN ID `0x240`** (角度): Payload 8B
+
+| バイト | 内容 |
+|---|---|
+| Byte0–1 | M1 角度 (int16_t, little-endian, 単位: 0.1 deg) |
+| Byte2–3 | M2 角度 |
+| Byte4–5 | M3 角度 |
+| Byte6–7 | M4 角度 |
+
+例: `0x04D2` (1234) → 123.4 deg
+
+**CAN ID `0x250`** (回転速度): Payload 8B
+
+| バイト | 内容 |
+|---|---|
+| Byte0–1 | M1 回転速度 (int16_t, little-endian, 単位: 0.01 rps) |
+| Byte2–3 | M2 回転速度 |
+| Byte4–5 | M3 回転速度 |
+| Byte6–7 | M4 回転速度 |
+
+例: `0x007B` (123) → 1.23 rps
 
 ---
 

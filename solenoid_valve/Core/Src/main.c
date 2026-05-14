@@ -15,7 +15,7 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define SV_COUNT 12U
-#define CAN_SV_CMD_STD_ID 0x300U
+#define CAN_SV_CMD_STD_ID 0x301U
 #define CAN_RX_TIMEOUT_MS 200U
 /* USER CODE END PD */
 
