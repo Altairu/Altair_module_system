@@ -267,26 +267,26 @@ static void MDD_ProcessTargetFrame(const uint8_t *data, uint8_t dlc) {
 }
 
 static void MDD_ProcessCan(void) {
-  if (g_can1_rx_data.new_data_flag == 0U) {
-    return;
-  }
+  CanRxData rx;
 
-  g_can1_rx_data.new_data_flag = 0U;
-  last_can_rx_tick = HAL_GetTick();
+  /* 受信キューに溜まった全フレームを順番に処理する */
+  while (Can_Receive(&g_can1_rx_queue, &rx) != 0U) {
+    last_can_rx_tick = HAL_GetTick();
 
-  uint32_t id = g_can1_rx_data.std_id;
-  uint8_t dlc = g_can1_rx_data.dlc;
-  uint8_t *data = g_can1_rx_data.data;
+    uint32_t id = rx.std_id;
+    uint8_t dlc = rx.dlc;
+    uint8_t *data = rx.data;
 
-  if (g_mode == MDD_MODE_PARAM_SET) {
-    if ((id >= CAN_ID_PARAM_BASE) && (id <= (CAN_ID_PARAM_BASE + 3U))) {
-      MDD_ProcessParamFrame(id, data, dlc);
-    } else if (id == CAN_ID_MODE) {
-      MDD_ProcessModeFrame(data, dlc);
-    }
-  } else {
-    if ((id == CAN_ID_TARGET) && (dlc == 8U)) {
-      MDD_ProcessTargetFrame(data, dlc);
+    if (g_mode == MDD_MODE_PARAM_SET) {
+      if ((id >= CAN_ID_PARAM_BASE) && (id <= (CAN_ID_PARAM_BASE + 3U))) {
+        MDD_ProcessParamFrame(id, data, dlc);
+      } else if (id == CAN_ID_MODE) {
+        MDD_ProcessModeFrame(data, dlc);
+      }
+    } else {
+      if ((id == CAN_ID_TARGET) && (dlc == 8U)) {
+        MDD_ProcessTargetFrame(data, dlc);
+      }
     }
   }
 }

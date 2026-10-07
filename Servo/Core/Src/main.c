@@ -186,11 +186,11 @@ static void MX_CAN1_Init(void)
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 3;
+  hcan1.Init.Prescaler = 2;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
-  hcan1.Init.SyncJumpWidth = CAN_SJW_4TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_11TQ;
-  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_2TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_16TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_4TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
@@ -223,11 +223,11 @@ static void MX_CAN2_Init(void)
 
   /* USER CODE END CAN2_Init 1 */
   hcan2.Instance = CAN2;
-  hcan2.Init.Prescaler = 3;
+  hcan2.Init.Prescaler = 2;
   hcan2.Init.Mode = CAN_MODE_NORMAL;
-  hcan2.Init.SyncJumpWidth = CAN_SJW_4TQ;
-  hcan2.Init.TimeSeg1 = CAN_BS1_11TQ;
-  hcan2.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan2.Init.SyncJumpWidth = CAN_SJW_2TQ;
+  hcan2.Init.TimeSeg1 = CAN_BS1_16TQ;
+  hcan2.Init.TimeSeg2 = CAN_BS2_4TQ;
   hcan2.Init.TimeTriggeredMode = DISABLE;
   hcan2.Init.AutoBusOff = ENABLE;
   hcan2.Init.AutoWakeUp = DISABLE;
@@ -583,22 +583,16 @@ static void Servo_StartPwmOutputs(void)
   }
 }
 
-static void Servo_ProcessCanCommand(void)
+static void Servo_ProcessCanFrame(const CanRxData *rx)
 {
   uint32_t i;
   uint8_t target_changed = 0U;
-
-  if (g_can1_rx_data.new_data_flag == 0U)
-  {
-    return;
-  }
-  g_can1_rx_data.new_data_flag = 0U;
 
   g_last_can_rx_tick = HAL_GetTick();
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 
   /* 標準ID 100(dec) または 0x100(hex)、かつ DLC>=6 のみ処理 */
-  if ((Servo_IsAcceptedCanId(g_can1_rx_data.std_id) == 0U) || (g_can1_rx_data.dlc < SERVO_COUNT))
+  if ((Servo_IsAcceptedCanId(rx->std_id) == 0U) || (rx->dlc < SERVO_COUNT))
   {
     return;
   }
@@ -606,7 +600,7 @@ static void Servo_ProcessCanCommand(void)
   /* 各軸角度を更新（過大値は180degへクリップ） */
   for (i = 0; i < SERVO_COUNT; i++)
   {
-    uint8_t received_degree = (g_can1_rx_data.data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : g_can1_rx_data.data[i];
+    uint8_t received_degree = (rx->data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : rx->data[i];
 
     if (Servo_GetAbsDiff(g_servo_candidate_deg[i], received_degree) <= SERVO_CAN_DEADBAND_DEG)
     {
@@ -638,6 +632,17 @@ static void Servo_ProcessCanCommand(void)
   if (target_changed != 0U)
   {
     Servo_ApplyTargets();
+  }
+}
+
+static void Servo_ProcessCanCommand(void)
+{
+  CanRxData rx;
+
+  /* 受信キューに溜まった全フレームを順番に処理する */
+  while (Can_Receive(&g_can1_rx_queue, &rx) != 0U)
+  {
+    Servo_ProcessCanFrame(&rx);
   }
 }
 

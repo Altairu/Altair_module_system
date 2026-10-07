@@ -195,11 +195,11 @@ static void MX_CAN1_Init(void) {
 
   /* USER CODE END CAN1_Init 1 */
   hcan1.Instance = CAN1;
-  hcan1.Init.Prescaler = 3;
+  hcan1.Init.Prescaler = 2;
   hcan1.Init.Mode = CAN_MODE_NORMAL;
-  hcan1.Init.SyncJumpWidth = CAN_SJW_4TQ;
-  hcan1.Init.TimeSeg1 = CAN_BS1_11TQ;
-  hcan1.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan1.Init.SyncJumpWidth = CAN_SJW_2TQ;
+  hcan1.Init.TimeSeg1 = CAN_BS1_16TQ;
+  hcan1.Init.TimeSeg2 = CAN_BS2_4TQ;
   hcan1.Init.TimeTriggeredMode = DISABLE;
   hcan1.Init.AutoBusOff = ENABLE;
   hcan1.Init.AutoWakeUp = DISABLE;
@@ -229,11 +229,11 @@ static void MX_CAN2_Init(void) {
 
   /* USER CODE END CAN2_Init 1 */
   hcan2.Instance = CAN2;
-  hcan2.Init.Prescaler = 3;
+  hcan2.Init.Prescaler = 2;
   hcan2.Init.Mode = CAN_MODE_NORMAL;
-  hcan2.Init.SyncJumpWidth = CAN_SJW_4TQ;
-  hcan2.Init.TimeSeg1 = CAN_BS1_11TQ;
-  hcan2.Init.TimeSeg2 = CAN_BS2_2TQ;
+  hcan2.Init.SyncJumpWidth = CAN_SJW_2TQ;
+  hcan2.Init.TimeSeg1 = CAN_BS1_16TQ;
+  hcan2.Init.TimeSeg2 = CAN_BS2_4TQ;
   hcan2.Init.TimeTriggeredMode = DISABLE;
   hcan2.Init.AutoBusOff = ENABLE;
   hcan2.Init.AutoWakeUp = DISABLE;
@@ -359,43 +359,33 @@ static void MX_GPIO_Init(void) {
 }
 
 /* USER CODE BEGIN 4 */
-static void SV_ProcessCanCommand(void) {
-  if (g_can1_rx_data.new_data_flag) {
-    g_can1_rx_data.new_data_flag = 0U;
-    
-    // 受信割り込みが来たこと自体を確認するためのデバッグトグル
-    HAL_GPIO_TogglePin(GPIOA, LED_Pin);
+static void SV_ProcessCanFrame(const CanRxData *rx) {
+  // 受信割り込みが来たこと自体を確認するためのデバッグトグル
+  HAL_GPIO_TogglePin(GPIOA, LED_Pin);
 
-    if (g_can1_rx_data.dlc >= 2 && SV_IsAcceptedCanId(g_can1_rx_data.std_id)) {
-      g_last_can_rx_tick = HAL_GetTick();
+  if (rx->dlc >= 2 && SV_IsAcceptedCanId(rx->std_id)) {
+    g_last_can_rx_tick = HAL_GetTick();
 
-      uint16_t state16 = g_can1_rx_data.data[0] | (g_can1_rx_data.data[1] << 8);
+    uint16_t state16 = rx->data[0] | (rx->data[1] << 8);
 
-      for (uint8_t i = 0; i < SV_COUNT; i++) {
-        g_sv_target_state[i] = (state16 & (1 << i)) ? 1 : 0;
-      }
-
-      SV_ApplyTargets();
+    for (uint8_t i = 0; i < SV_COUNT; i++) {
+      g_sv_target_state[i] = (state16 & (1 << i)) ? 1 : 0;
     }
+
+    SV_ApplyTargets();
+  }
+}
+
+static void SV_ProcessCanCommand(void) {
+  CanRxData rx;
+
+  // 受信キューに溜まった全フレームを順番に処理する
+  while (Can_Receive(&g_can1_rx_queue, &rx)) {
+    SV_ProcessCanFrame(&rx);
   }
 
-  if (g_can2_rx_data.new_data_flag) {
-    g_can2_rx_data.new_data_flag = 0U;
-
-    // 受信割り込みが来たこと自体を確認するためのデバッグトグル
-    HAL_GPIO_TogglePin(GPIOA, LED_Pin);
-
-    if (g_can2_rx_data.dlc >= 2 && SV_IsAcceptedCanId(g_can2_rx_data.std_id)) {
-      g_last_can_rx_tick = HAL_GetTick();
-
-      uint16_t state16 = g_can2_rx_data.data[0] | (g_can2_rx_data.data[1] << 8);
-
-      for (uint8_t i = 0; i < SV_COUNT; i++) {
-        g_sv_target_state[i] = (state16 & (1 << i)) ? 1 : 0;
-      }
-
-      SV_ApplyTargets();
-    }
+  while (Can_Receive(&g_can2_rx_queue, &rx)) {
+    SV_ProcessCanFrame(&rx);
   }
 }
 
