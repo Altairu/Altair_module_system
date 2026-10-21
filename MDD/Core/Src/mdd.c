@@ -202,7 +202,8 @@ static void MDD_ProcessParamFrame(uint32_t id, const uint8_t *data,
 }
 
 static void MDD_ProcessModeFrame(const uint8_t *data, uint8_t dlc) {
-  if (dlc != 4U) {
+  /* USB-CAN(DLC=4)とEthernet-CAN(固定DLC=8)の双方を受け付ける */
+  if (dlc < 4U) {
     return;
   }
 
