@@ -10,25 +10,25 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 /* サーボ軸数（固定6軸） */
-#define SERVO_COUNT            6U
+#define SERVO_COUNT 6U
 /* サーボ目標角度を受信するCAN標準ID（100(dec) または 0x100(hex) を許可） */
 #define CAN_SERVO_CMD_STD_ID_DEC 100U
 #define CAN_SERVO_CMD_STD_ID_HEX 0x100U
 /* 通信途絶とみなすまでの無受信時間[ms] */
-#define CAN_RX_TIMEOUT_MS      200U
+#define CAN_RX_TIMEOUT_MS 200U
 /* サーボ最小パルス幅[us]（0deg相当） */
-#define SERVO_MIN_PULSE_US     500U
+#define SERVO_MIN_PULSE_US 500U
 /* サーボ最大パルス幅[us]（180deg相当） */
-#define SERVO_MAX_PULSE_US     2500U
+#define SERVO_MAX_PULSE_US 2500U
 /* 受け付ける角度の上限[deg] */
-#define SERVO_MAX_DEGREE       180U
+#define SERVO_MAX_DEGREE 180U
 /* 一般的なRCサーボ向けPWM: 50Hz（20ms周期）, 1us分解能 */
-#define SERVO_PWM_PRESCALER     83U
-#define SERVO_PWM_PERIOD_TICKS  19999U
+#define SERVO_PWM_PRESCALER 83U
+#define SERVO_PWM_PERIOD_TICKS 19999U
 /* CAN値の微小な揺れを無視するしきい値[deg] */
-#define SERVO_CAN_DEADBAND_DEG   2U
+#define SERVO_CAN_DEADBAND_DEG 0U
 /* 同じ目標値を何回連続で受けたら反映するか */
-#define SERVO_CAN_STABLE_COUNT   3U
+#define SERVO_CAN_STABLE_COUNT 1U
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -48,9 +48,11 @@ USART_HandleTypeDef husart3;
 
 /* USER CODE BEGIN PV */
 /* 各サーボの目標角度（初期値は全軸90度） */
-static volatile uint8_t g_servo_target_deg[SERVO_COUNT] = {90U, 90U, 90U, 90U, 90U, 90U};
+static volatile uint8_t g_servo_target_deg[SERVO_COUNT] = {90U, 90U, 90U,
+                                                           90U, 90U, 90U};
 /* 直近のCAN受信角度を一時保持 */
-static uint8_t g_servo_candidate_deg[SERVO_COUNT] = {90U, 90U, 90U, 90U, 90U, 90U};
+static uint8_t g_servo_candidate_deg[SERVO_COUNT] = {90U, 90U, 90U,
+                                                     90U, 90U, 90U};
 /* 同じ候補値が連続した回数 */
 static uint8_t g_servo_candidate_count[SERVO_COUNT] = {0U, 0U, 0U, 0U, 0U, 0U};
 /* 最後に有効なCANを受信した時刻[ms] */
@@ -81,8 +83,7 @@ static uint8_t Servo_GetAbsDiff(uint8_t lhs, uint8_t rhs);
 /* USER CODE BEGIN 0 */
 /* USER CODE END 0 */
 
-int main(void)
-{
+int main(void) {
   HAL_Init();
   SystemClock_Config();
   MX_GPIO_Init();
@@ -97,8 +98,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   /* AltairライブラリのCAN初期化（フィルタ設定 + 受信割り込み開始） */
   CanInitConfig can1_config = Can_DefaultInitConfig(&hcan1);
-  if (Can_Init(&hcan1, &can1_config) != HAL_OK)
-  {
+  if (Can_Init(&hcan1, &can1_config) != HAL_OK) {
     Error_Handler();
   }
 
@@ -108,38 +108,34 @@ int main(void)
   g_servo_outputs_started = 1U;
   /* USER CODE END 2 */
 
-  while (1)
-  {
+  while (1) {
     /* USER CODE BEGIN WHILE */
     /* can_lib.c 側コールバックで受信されたフレームを処理 */
     Servo_ProcessCanCommand();
 
     /* 受信が一定時間ない場合は通信LEDを消灯（角度は保持） */
-    if ((HAL_GetTick() - g_last_can_rx_tick) > CAN_RX_TIMEOUT_MS)
-    {
+    if ((HAL_GetTick() - g_last_can_rx_tick) > CAN_RX_TIMEOUT_MS) {
       HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
     }
   }
-
 }
 
 /**
-  * @brief System Clock Configuration
-  * @retval None
-  */
-void SystemClock_Config(void)
-{
+ * @brief System Clock Configuration
+ * @retval None
+ */
+void SystemClock_Config(void) {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
 
   /** Configure the main internal regulator output voltage
-  */
+   */
   __HAL_RCC_PWR_CLK_ENABLE();
   __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
 
   /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
+   * in the RCC_OscInitTypeDef structure.
+   */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
@@ -150,33 +146,30 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = 2;
   RCC_OscInitStruct.PLL.PLLR = 2;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) {
     Error_Handler();
   }
 
   /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+   */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK |
+                                RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV4;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
-  {
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK) {
     Error_Handler();
   }
 }
 
 /**
-  * @brief CAN1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_CAN1_Init(void)
-{
+ * @brief CAN1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_CAN1_Init(void) {
 
   /* USER CODE BEGIN CAN1_Init 0 */
 
@@ -197,23 +190,20 @@ static void MX_CAN1_Init(void)
   hcan1.Init.AutoRetransmission = ENABLE;
   hcan1.Init.ReceiveFifoLocked = DISABLE;
   hcan1.Init.TransmitFifoPriority = DISABLE;
-  if (HAL_CAN_Init(&hcan1) != HAL_OK)
-  {
+  if (HAL_CAN_Init(&hcan1) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN CAN1_Init 2 */
 
   /* USER CODE END CAN1_Init 2 */
-
 }
 
 /**
-  * @brief CAN2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_CAN2_Init(void)
-{
+ * @brief CAN2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_CAN2_Init(void) {
 
   /* USER CODE BEGIN CAN2_Init 0 */
 
@@ -234,23 +224,20 @@ static void MX_CAN2_Init(void)
   hcan2.Init.AutoRetransmission = ENABLE;
   hcan2.Init.ReceiveFifoLocked = DISABLE;
   hcan2.Init.TransmitFifoPriority = DISABLE;
-  if (HAL_CAN_Init(&hcan2) != HAL_OK)
-  {
+  if (HAL_CAN_Init(&hcan2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN CAN2_Init 2 */
 
   /* USER CODE END CAN2_Init 2 */
-
 }
 
 /**
-  * @brief TIM1 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM1_Init(void)
-{
+ * @brief TIM1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM1_Init(void) {
 
   /* USER CODE BEGIN TIM1_Init 0 */
 
@@ -270,14 +257,12 @@ static void MX_TIM1_Init(void)
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
   htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK) {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
-  {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK) {
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
@@ -287,12 +272,10 @@ static void MX_TIM1_Init(void)
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
   sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK) {
     Error_Handler();
   }
   sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
@@ -302,24 +285,21 @@ static void MX_TIM1_Init(void)
   sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
   sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
   sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
-  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
-  {
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM1_Init 2 */
 
   /* USER CODE END TIM1_Init 2 */
   HAL_TIM_MspPostInit(&htim1);
-
 }
 
 /**
-  * @brief TIM2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM2_Init(void)
-{
+ * @brief TIM2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM2_Init(void) {
 
   /* USER CODE BEGIN TIM2_Init 0 */
 
@@ -337,42 +317,36 @@ static void MX_TIM2_Init(void)
   htim2.Init.Period = SERVO_PWM_PERIOD_TICKS;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Init(&htim2) != HAL_OK) {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
-  {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) {
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM2_Init 2 */
 
   /* USER CODE END TIM2_Init 2 */
   HAL_TIM_MspPostInit(&htim2);
-
 }
 
 /**
-  * @brief TIM3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_TIM3_Init(void)
-{
+ * @brief TIM3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_TIM3_Init(void) {
 
   /* USER CODE BEGIN TIM3_Init 0 */
 
@@ -390,42 +364,36 @@ static void MX_TIM3_Init(void)
   htim3.Init.Period = SERVO_PWM_PERIOD_TICKS;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Init(&htim3) != HAL_OK) {
     Error_Handler();
   }
   sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
   sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK) {
     Error_Handler();
   }
   sConfigOC.OCMode = TIM_OCMODE_PWM1;
   sConfigOC.Pulse = 0;
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
-  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN TIM3_Init 2 */
 
   /* USER CODE END TIM3_Init 2 */
   HAL_TIM_MspPostInit(&htim3);
-
 }
 
 /**
-  * @brief USART2 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART2_Init(void)
-{
+ * @brief USART2 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART2_Init(void) {
 
   /* USER CODE BEGIN USART2_Init 0 */
 
@@ -443,23 +411,20 @@ static void MX_USART2_Init(void)
   husart2.Init.CLKPolarity = USART_POLARITY_LOW;
   husart2.Init.CLKPhase = USART_PHASE_1EDGE;
   husart2.Init.CLKLastBit = USART_LASTBIT_DISABLE;
-  if (HAL_USART_Init(&husart2) != HAL_OK)
-  {
+  if (HAL_USART_Init(&husart2) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
 }
 
 /**
-  * @brief USART3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART3_Init(void)
-{
+ * @brief USART3 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_USART3_Init(void) {
 
   /* USER CODE BEGIN USART3_Init 0 */
 
@@ -477,23 +442,20 @@ static void MX_USART3_Init(void)
   husart3.Init.CLKPolarity = USART_POLARITY_LOW;
   husart3.Init.CLKPhase = USART_PHASE_1EDGE;
   husart3.Init.CLKLastBit = USART_LASTBIT_DISABLE;
-  if (HAL_USART_Init(&husart3) != HAL_OK)
-  {
+  if (HAL_USART_Init(&husart3) != HAL_OK) {
     Error_Handler();
   }
   /* USER CODE BEGIN USART3_Init 2 */
 
   /* USER CODE END USART3_Init 2 */
-
 }
 
 /**
-  * @brief GPIO Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_GPIO_Init(void)
-{
+ * @brief GPIO Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_GPIO_Init(void) {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
@@ -526,8 +488,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-static uint32_t Servo_AngleToPulseUs(uint8_t degree)
-{
+static uint32_t Servo_AngleToPulseUs(uint8_t degree) {
   uint32_t clamped_degree;
   uint32_t pulse_range;
 
@@ -536,55 +497,53 @@ static uint32_t Servo_AngleToPulseUs(uint8_t degree)
   pulse_range = SERVO_MAX_PULSE_US - SERVO_MIN_PULSE_US;
 
   /* 0..180deg を 500..2500us に線形変換 */
-  return SERVO_MIN_PULSE_US + ((pulse_range * clamped_degree) / SERVO_MAX_DEGREE);
+  return SERVO_MIN_PULSE_US +
+         ((pulse_range * clamped_degree) / SERVO_MAX_DEGREE);
 }
 
-static void Servo_ApplyTargets(void)
-{
+static void Servo_ApplyTargets(void) {
   /* ピン割当: PA6/PA7/PA8/PA9/PB8/PB9 */
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[0]));
-  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[1]));
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[2]));
-  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[3]));
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, Servo_AngleToPulseUs(g_servo_target_deg[4]));
-  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2, Servo_AngleToPulseUs(g_servo_target_deg[5]));
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1,
+                        Servo_AngleToPulseUs(g_servo_target_deg[0]));
+  __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2,
+                        Servo_AngleToPulseUs(g_servo_target_deg[1]));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1,
+                        Servo_AngleToPulseUs(g_servo_target_deg[2]));
+  __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2,
+                        Servo_AngleToPulseUs(g_servo_target_deg[3]));
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1,
+                        Servo_AngleToPulseUs(g_servo_target_deg[4]));
+  __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_2,
+                        Servo_AngleToPulseUs(g_servo_target_deg[5]));
 }
 
-static void Servo_StartPwmOutputs(void)
-{
-  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK)
-  {
+static void Servo_StartPwmOutputs(void) {
+  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
 
-  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2) != HAL_OK) {
     Error_Handler();
   }
 
-  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
 
-  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2) != HAL_OK) {
     Error_Handler();
   }
 
-  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1) != HAL_OK) {
     Error_Handler();
   }
 
-  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK)
-  {
+  if (HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2) != HAL_OK) {
     Error_Handler();
   }
 }
 
-static void Servo_ProcessCanFrame(const CanRxData *rx)
-{
+static void Servo_ProcessCanFrame(const CanRxData *rx) {
   uint32_t i;
   uint8_t target_changed = 0U;
 
@@ -592,104 +551,92 @@ static void Servo_ProcessCanFrame(const CanRxData *rx)
   HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_SET);
 
   /* 標準ID 100(dec) または 0x100(hex)、かつ DLC>=6 のみ処理 */
-  if ((Servo_IsAcceptedCanId(rx->std_id) == 0U) || (rx->dlc < SERVO_COUNT))
-  {
+  if ((Servo_IsAcceptedCanId(rx->std_id) == 0U) || (rx->dlc < SERVO_COUNT)) {
     return;
   }
 
   /* 各軸角度を更新（過大値は180degへクリップ） */
-  for (i = 0; i < SERVO_COUNT; i++)
-  {
-    uint8_t received_degree = (rx->data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : rx->data[i];
+  for (i = 0; i < SERVO_COUNT; i++) {
+    uint8_t received_degree =
+        (rx->data[i] > SERVO_MAX_DEGREE) ? SERVO_MAX_DEGREE : rx->data[i];
 
-    if (Servo_GetAbsDiff(g_servo_candidate_deg[i], received_degree) <= SERVO_CAN_DEADBAND_DEG)
-    {
-      if (g_servo_candidate_count[i] < SERVO_CAN_STABLE_COUNT)
-      {
+    if (Servo_GetAbsDiff(g_servo_candidate_deg[i], received_degree) <=
+        SERVO_CAN_DEADBAND_DEG) {
+      if (g_servo_candidate_count[i] < SERVO_CAN_STABLE_COUNT) {
         g_servo_candidate_count[i]++;
       }
-    }
-    else
-    {
+    } else {
       g_servo_candidate_deg[i] = received_degree;
       g_servo_candidate_count[i] = 1U;
     }
 
     if ((g_servo_candidate_count[i] >= SERVO_CAN_STABLE_COUNT) &&
-        (Servo_GetAbsDiff(g_servo_target_deg[i], g_servo_candidate_deg[i]) > SERVO_CAN_DEADBAND_DEG))
-    {
+        (Servo_GetAbsDiff(g_servo_target_deg[i], g_servo_candidate_deg[i]) >
+         SERVO_CAN_DEADBAND_DEG)) {
       g_servo_target_deg[i] = g_servo_candidate_deg[i];
       target_changed = 1U;
     }
   }
 
-  if (g_servo_outputs_started == 0U)
-  {
+  if (g_servo_outputs_started == 0U) {
     Servo_StartPwmOutputs();
     g_servo_outputs_started = 1U;
   }
 
-  if (target_changed != 0U)
-  {
+  if (target_changed != 0U) {
     Servo_ApplyTargets();
   }
 }
 
-static void Servo_ProcessCanCommand(void)
-{
+static void Servo_ProcessCanCommand(void) {
   CanRxData rx;
 
   /* 受信キューに溜まった全フレームを順番に処理する */
-  while (Can_Receive(&g_can1_rx_queue, &rx) != 0U)
-  {
+  while (Can_Receive(&g_can1_rx_queue, &rx) != 0U) {
     Servo_ProcessCanFrame(&rx);
   }
 }
 
-static uint8_t Servo_IsAcceptedCanId(uint32_t std_id)
-{
-  if ((std_id == CAN_SERVO_CMD_STD_ID_DEC) || (std_id == CAN_SERVO_CMD_STD_ID_HEX))
-  {
+static uint8_t Servo_IsAcceptedCanId(uint32_t std_id) {
+  if ((std_id == CAN_SERVO_CMD_STD_ID_DEC) ||
+      (std_id == CAN_SERVO_CMD_STD_ID_HEX)) {
     return 1U;
   }
 
   return 0U;
 }
 
-static uint8_t Servo_GetAbsDiff(uint8_t lhs, uint8_t rhs)
-{
+static uint8_t Servo_GetAbsDiff(uint8_t lhs, uint8_t rhs) {
   return (lhs > rhs) ? (lhs - rhs) : (rhs - lhs);
 }
 
 /* USER CODE END 4 */
 
 /**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
-void Error_Handler(void)
-{
+ * @brief  This function is executed in case of error occurrence.
+ * @retval None
+ */
+void Error_Handler(void) {
   /* USER CODE BEGIN Error_Handler_Debug */
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
-  while (1)
-  {
+  while (1) {
   }
   /* USER CODE END Error_Handler_Debug */
 }
 #ifdef USE_FULL_ASSERT
 /**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
+ * @brief  Reports the name of the source file and the source line number
+ *         where the assert_param error has occurred.
+ * @param  file: pointer to the source file name
+ * @param  line: assert_param error line source number
+ * @retval None
+ */
+void assert_failed(uint8_t *file, uint32_t line) {
   /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* User can add his own implementation to report the file name and line
+     number, ex: printf("Wrong parameters value: file %s on line %d\r\n", file,
+     line) */
   /* USER CODE END 6 */
 }
 #endif /* USE_FULL_ASSERT */
