@@ -10,6 +10,12 @@ typedef enum {
   MDD_CTRL_POSITION = 2
 } MDD_CtrlMode_t;
 
+typedef enum {
+  MDD_TX_STEP_DEG = 0,
+  MDD_TX_STEP_RPS = 1,
+  MDD_TX_STEP_STATUS = 2
+} MDD_TxStep_t;
+
 extern CAN_HandleTypeDef hcan1;
 extern TIM_HandleTypeDef htim1;
 extern TIM_HandleTypeDef htim2;
@@ -28,8 +34,8 @@ extern TIM_HandleTypeDef htim14;
 #define ENCODER_PERIOD_MS 1
 #define CONTROL_PERIOD_MS 10
 
-#define STATUS_PERIOD_MS 10
-#define ENCODER_TX_PERIOD_MS 10  /* エンコーダー送信周期 (モード問わず常時) */
+#define STATUS_PERIOD_MS 5
+#define ENCODER_TX_PERIOD_MS 5 /* エンコーダー送信周期 (モード問わず常時) */
 #define INIT_WAIT_TIMEOUT_MS 2000
 #define CAN_RX_TIMEOUT_MS 1000
 
@@ -37,8 +43,8 @@ extern TIM_HandleTypeDef htim14;
 #define CAN_ID_MODE 0x210U
 #define CAN_ID_TARGET 0x220U
 #define CAN_ID_STATUS 0x230U
-#define CAN_ID_DEG    0x240U  /* エンコーダ角度送信 (baseId + 0x40) */
-#define CAN_ID_RPS    0x250U  /* エンコーダ回転速度送信 (baseId + 0x50) */
+#define CAN_ID_DEG 0x240U /* エンコーダ角度送信 (baseId + 0x40) */
+#define CAN_ID_RPS 0x250U /* エンコーダ回転速度送信 (baseId + 0x50) */
 
 /*　CANのID規則
 MDD1
@@ -102,8 +108,8 @@ static uint8_t g_error_code = ERR_NORMAL;
 static uint32_t boot_tick = 0U;
 static uint32_t last_can_rx_tick = 0U;
 static uint32_t last_control_tick = 0U;
-static uint32_t last_status_tick = 0U;
-static uint32_t last_encoder_tx_tick = 0U;  /* エンコーダー送信タイムスタンプ */
+static uint32_t last_tx_tick = 0U;
+static MDD_TxStep_t g_tx_step = MDD_TX_STEP_DEG;
 
 static uint8_t g_limit_sw_state[LIMIT_SW_COUNT] = {0U, 0U, 0U, 0U};
 static uint8_t g_limit_sw_diff_count[LIMIT_SW_COUNT] = {0U, 0U, 0U, 0U};
@@ -229,12 +235,12 @@ static void MDD_ProcessModeFrame(const uint8_t *data, uint8_t dlc) {
     for (int i = 0; i < MOTOR_COUNT; i++) {
       /* エンコーダのハードウェアタイマー値をリセット */
       Encoder_Reset(&g_encoder[i]);
-      
+
       /* エンコーダの蓄積データと計算用変数をリセット */
       g_encoder[i].limit = 0;
       g_encoder[i].before_rot = 0.0;
       g_encoder[i].before_deg = 0.0;
-      
+
       g_encoder_data[i].count = 0;
       g_encoder_data[i].rot = 0.0;
       g_encoder_data[i].deg = 0.0;
@@ -334,13 +340,7 @@ static void MDD_RunControlStep(void) {
   }
 }
 
-static void MDD_SendStatus(uint32_t now) {
-  if ((now - last_status_tick) < STATUS_PERIOD_MS) {
-    return;
-  }
-
-  last_status_tick = now;
-
+static void MDD_SendStatus(void) {
   uint8_t tx_data[8] = {0};
   MDD_UpdateLimitSwDebounce();
 
@@ -358,44 +358,77 @@ static void MDD_SendStatus(uint32_t now) {
   }
 }
 
-/**
- * @brief エンコーダー角度・回転速度をCANで送信する（モード問わず常時）
- *        DEG: 0x240 - int16_t × 4 (単位: 0.1度、例: 1234 = 123.4度)
- *        RPS: 0x250 - int16_t × 4 (単位: 0.01rps、例: 123 = 1.23rps)
- */
-static void MDD_SendEncoderData(uint32_t now) {
-  if ((now - last_encoder_tx_tick) < ENCODER_TX_PERIOD_MS) {
-    return;
+static void MDD_SendEncoderDeg(void) {
+  uint8_t deg_data[8] = {0};
+
+  for (int i = 0; i < MOTOR_COUNT; i++) {
+    /* 角度を0.1度単位に変換してint16_tにクランプする */
+    int32_t deg_raw = (int32_t)(g_encoder_data[i].deg * 10.0);
+    if (deg_raw > 32767)
+      deg_raw = 32767;
+    if (deg_raw < -32768)
+      deg_raw = -32768;
+    int16_t deg_val = (int16_t)deg_raw;
+    deg_data[i * 2] = (uint8_t)((uint16_t)deg_val & 0xFFU);
+    deg_data[i * 2 + 1] = (uint8_t)(((uint16_t)deg_val >> 8U) & 0xFFU);
   }
 
-  last_encoder_tx_tick = now;
+  if (Can_Transmit(&hcan1, CAN_ID_DEG, deg_data, 8U) != HAL_OK) {
+    g_error_code |= ERR_CAN_TX_FAIL;
+  } else {
+    g_error_code &= (uint8_t)~ERR_CAN_TX_FAIL;
+  }
+}
 
-  uint8_t deg_data[8] = {0};
+static void MDD_SendEncoderRps(void) {
   uint8_t rps_data[8] = {0};
 
   for (int i = 0; i < MOTOR_COUNT; i++) {
-    /* deg: 0.1度単位に変換してint16_tにクランプ */
-    int32_t deg_raw = (int32_t)(g_encoder_data[i].deg * 10.0);
-    if (deg_raw > 32767)  deg_raw = 32767;
-    if (deg_raw < -32768) deg_raw = -32768;
-    int16_t deg_val = (int16_t)deg_raw;
-    deg_data[i * 2]     = (uint8_t)((uint16_t)deg_val & 0xFFU);
-    deg_data[i * 2 + 1] = (uint8_t)(((uint16_t)deg_val >> 8U) & 0xFFU);
-
-    /* rps: 0.01rps単位に変換してint16_tにクランプ */
+    /* 回転速度を0.01rps単位に変換してint16_tにクランプする */
     int32_t rps_raw = (int32_t)(g_encoder_data[i].rps * 100.0);
-    if (rps_raw > 32767)  rps_raw = 32767;
-    if (rps_raw < -32768) rps_raw = -32768;
+    if (rps_raw > 32767)
+      rps_raw = 32767;
+    if (rps_raw < -32768)
+      rps_raw = -32768;
     int16_t rps_val = (int16_t)rps_raw;
-    rps_data[i * 2]     = (uint8_t)((uint16_t)rps_val & 0xFFU);
+    rps_data[i * 2] = (uint8_t)((uint16_t)rps_val & 0xFFU);
     rps_data[i * 2 + 1] = (uint8_t)(((uint16_t)rps_val >> 8U) & 0xFFU);
   }
 
-  /* エンコーダ角度を送信 */
-  Can_Transmit(&hcan1, CAN_ID_DEG, deg_data, 8U);
+  if (Can_Transmit(&hcan1, CAN_ID_RPS, rps_data, 8U) != HAL_OK) {
+    g_error_code |= ERR_CAN_TX_FAIL;
+  } else {
+    g_error_code &= (uint8_t)~ERR_CAN_TX_FAIL;
+  }
+}
 
-  /* エンコーダ回転速度を送信 */
-  Can_Transmit(&hcan1, CAN_ID_RPS, rps_data, 8U);
+static void MDD_SendPeriodicCan(uint32_t now) {
+  uint32_t wait_ms = ENCODER_TX_PERIOD_MS;
+  if (g_tx_step == MDD_TX_STEP_DEG) {
+    wait_ms = STATUS_PERIOD_MS;
+  }
+
+  if ((now - last_tx_tick) < wait_ms) {
+    return;
+  }
+
+  last_tx_tick = now;
+
+  switch (g_tx_step) {
+  case MDD_TX_STEP_DEG:
+    MDD_SendEncoderDeg();
+    g_tx_step = MDD_TX_STEP_RPS;
+    break;
+  case MDD_TX_STEP_RPS:
+    MDD_SendEncoderRps();
+    g_tx_step = MDD_TX_STEP_STATUS;
+    break;
+  case MDD_TX_STEP_STATUS:
+  default:
+    MDD_SendStatus();
+    g_tx_step = MDD_TX_STEP_DEG;
+    break;
+  }
 }
 
 void MDD_Init(void) {
@@ -432,8 +465,8 @@ void MDD_Init(void) {
   boot_tick = now;
   last_can_rx_tick = now;
   last_control_tick = now;
-  last_status_tick = now;
-  last_encoder_tx_tick = now;  /* エンコーダー送信タイマーを初期化 */
+  last_tx_tick = now;
+  g_tx_step = MDD_TX_STEP_DEG;
 }
 
 void MDD_Update(void) {
@@ -450,8 +483,6 @@ void MDD_Update(void) {
     MDD_RunControlStep();
   }
 
-  MDD_SendStatus(now);
-
-  /* エンコーダー値はモードに関わらず常時送信する */
-  MDD_SendEncoderData(now);
+  /* エンコーダ角度と回転速度およびステータスを1フレームずつ順番に送信する */
+  MDD_SendPeriodicCan(now);
 }
