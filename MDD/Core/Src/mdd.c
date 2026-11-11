@@ -116,10 +116,10 @@ static uint8_t g_limit_sw_diff_count[LIMIT_SW_COUNT] = {0U, 0U, 0U, 0U};
 
 static int MDD_ClampPwm(double in) {
   int v = (int)in;
-  if (v > 100) {
+  if (v > 99) {
     v = 99;
   }
-  if (v < -100) {
+  if (v < -99) {
     v = -99;
   }
   return v;

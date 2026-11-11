@@ -112,8 +112,8 @@ void MotorDriver_Init(MotorDriver* motor, TIM_HandleTypeDef* htimA, uint32_t cha
 // 速度設定関数
 void MotorDriver_setSpeed(MotorDriver *motor, int speed) {
 	int pwm_value;
-    if (speed > 100) speed = 99;
-    if (speed < -100) speed = -99;
+    if (speed > 99) speed = 99;
+    if (speed < -99) speed = -99;
 
     if (speed > 0) {
         pwm_value = (speed * __HAL_TIM_GET_AUTORELOAD(motor->htimA)) / 100;
